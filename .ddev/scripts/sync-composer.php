@@ -46,11 +46,24 @@ if (empty($sysextNames)) {
     exit(1);
 }
 
-// Keep non-sysext requires (custom packages from packages/*)
+// Detect active branch to determine version-specific packages
+$coreDir = $projectRoot . '/typo3-core';
+$branch = trim(shell_exec("git -C " . escapeshellarg($coreDir) . " branch --show-current 2>/dev/null") ?: 'main');
+
+// Keep non-sysext requires (custom packages from packages/*),
+// but drop managed typo3/* packages so they can be re-evaluated
+$managedPrefixes = ['typo3/cms-', 'typo3/theme-'];
 $oldRequire = $composerData['require'] ?? [];
 $newRequire = [];
 foreach ($oldRequire as $package => $version) {
-    if (!str_starts_with($package, 'typo3/cms-')) {
+    $isManaged = false;
+    foreach ($managedPrefixes as $prefix) {
+        if (str_starts_with($package, $prefix)) {
+            $isManaged = true;
+            break;
+        }
+    }
+    if (!$isManaged) {
         $newRequire[$package] = $version;
     }
 }
@@ -59,6 +72,12 @@ foreach ($oldRequire as $package => $version) {
 foreach ($sysextNames as $name) {
     $newRequire[$name] = '@dev';
 }
+
+// Packages only included on main / v14+
+if ($branch === 'main' || version_compare($branch, '14', '>=')) {
+    $newRequire['typo3/theme-camino'] = '@dev';
+}
+
 ksort($newRequire);
 
 $composerData['require'] = $newRequire;
