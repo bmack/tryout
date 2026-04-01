@@ -11,8 +11,7 @@ composer.lock
 /config/sites/
 /config/system/settings.php
 
-# DDEV — config.yaml is generated per-instance (worktree/clone friendly)
-/.ddev/config.yaml
+# DDEV local overrides (for worktrees / personal settings)
 /.ddev/config.local.yaml
 /.ddev/.webimageBuild/
 /.ddev/.homeadditions/
