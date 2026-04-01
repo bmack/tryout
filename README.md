@@ -10,7 +10,7 @@ anyone who wants to quickly spin up a TYPO3 instance backed by the actual Core r
 ## Quick Start
 
 ```bash
-git clone <this-repo> tryout
+git clone git@github.com:bmack/tryout.git tryout
 cd tryout
 ddev start
 ```
