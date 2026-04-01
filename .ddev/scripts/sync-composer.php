@@ -4,7 +4,7 @@
  * Regenerates composer.json to match the system extensions available
  * in typo3-core/typo3/sysext/. Run after switching Core branches.
  *
- * - Scans typo3-core/typo3/sysext/*/composer.json for package names
+ * - Scans typo3-core/typo3/sysext/<*>/composer.json for package names
  * - Rewrites the "require" section with those packages at "@dev"
  * - Preserves non-typo3/cms-* requires (custom packages)
  * - Preserves all other composer.json fields
