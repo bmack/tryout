@@ -54,6 +54,13 @@ success "Composer dependencies installed"
 
 # --- Step 4: TYPO3 setup (first time only) ---
 if [ ! -f "${PROJECT_ROOT}/config/system/settings.php" ]; then
+    # Derive SQL type from DDEV
+    ddev_db="${DDEV_DATABASE:-mariadb}"
+    export TYPO3_DB_DRIVER="mysqli"
+    if [[ "${ddev_db}" == postgres* ]]; then
+      export TYPO3_DB_DRIVER="postgres"
+    fi
+
     # Derive server type from DDEV webserver config
     case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in
         apache*) SERVER_TYPE="apache" ;;
