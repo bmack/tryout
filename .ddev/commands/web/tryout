@@ -329,13 +329,23 @@ cmd_checkout() {
     rm -rf var/cache/*
 
     success "Core switched to ${target_branch}"
+
+    # Sync composer.json and rebuild
+    cmd_composer
+    rebuild_typo3
+
     echo ""
-    echo "Next steps:"
-    echo "  1. On your host, run:  make composer"
-    echo "  2. Then:               ddev composer install"
-    echo ""
-    echo "This regenerates composer.json to match the system extensions"
-    echo "available on the ${target_branch} branch."
+    success "Now on TYPO3 branch ${target_branch}"
+    echo -e "  ${BOLD}Site:${NC} ${DDEV_PRIMARY_URL}"
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# composer — Regenerate composer.json from available system extensions
+# ─────────────────────────────────────────────────────────────────────
+cmd_composer() {
+    require_core
+    info "Syncing composer.json with available system extensions..."
+    php /var/www/html/.ddev/scripts/sync-composer.php
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -350,6 +360,7 @@ cmd_help() {
     echo -e "  ${BOLD}download${NC}            Clone or update TYPO3 Core"
     echo -e "  ${BOLD}download --reset${NC}    Hard reset Core to current branch"
     echo -e "  ${BOLD}checkout <branch>${NC}   Switch TYPO3 version (main, 13.4, 12.4, ...)"
+    echo -e "  ${BOLD}composer${NC}            Regenerate composer.json from Core sysexts"
     echo -e "  ${BOLD}patch <change-id>${NC}   Apply a Gerrit patch by change ID"
     echo -e "  ${BOLD}patch${NC}               Apply all patches from config"
     echo -e "  ${BOLD}reset${NC}               Reset Core to current branch + rebuild"
@@ -373,6 +384,7 @@ case "${ACTION}" in
     status)   cmd_status "$@" ;;
     download) cmd_download "$@" ;;
     checkout) cmd_checkout "$@" ;;
+    composer) cmd_composer "$@" ;;
     patch)    cmd_patch "$@" ;;
     reset)    cmd_reset "$@" ;;
     delete)   cmd_delete "$@" ;;

@@ -36,6 +36,7 @@ ddev tryout status              Show project overview
 ddev tryout download            Clone or update TYPO3 Core
 ddev tryout download --reset    Hard reset Core to current branch
 ddev tryout checkout <branch>   Switch TYPO3 version (main, 13.4, 12.4, ...)
+ddev tryout composer            Regenerate composer.json from Core sysexts
 ddev tryout patch <change-id>   Apply a Gerrit patch
 ddev tryout patch               Apply all patches from config
 ddev tryout reset               Reset Core to current branch + rebuild
@@ -84,25 +85,24 @@ By default tryout clones the `main` branch (latest development). To work
 against a different major version:
 
 ```bash
-# 1. Switch the Core clone to the desired branch
 ddev tryout checkout 13.4
-
-# 2. Regenerate composer.json to match that branch's system extensions
-make composer
-
-# 3. Install the updated dependencies
-ddev composer install
 ```
 
+This single command switches the Core branch, regenerates `composer.json`,
+and rebuilds everything. Run without arguments to see all available branches.
+
 Different TYPO3 versions ship different sets of system extensions.
-`make composer` scans `typo3-core/typo3/sysext/` and rewrites the `require`
-section of `composer.json` to match exactly what exists on disk — no manual
-editing needed.
+`checkout` handles this automatically: a PHP script scans
+`typo3-core/typo3/sysext/*/composer.json` and rewrites the `require`
+section to match exactly what exists on disk.
 
-Run `ddev tryout checkout` without arguments to see all available branches.
+You can also regenerate `composer.json` independently at any time:
 
-You can also pin the branch via environment variable in a DDEV config override
-(e.g. `.ddev/config.local.yaml`):
+```bash
+ddev tryout composer
+```
+
+To pin the branch via environment variable (e.g. in `.ddev/config.local.yaml`):
 
 ```yaml
 web_environment:
