@@ -1,0 +1,28 @@
+type: typo3
+docroot: public
+php_version: "8.4"
+webserver_type: apache-fpm
+database:
+  type: mariadb
+  version: "10.11"
+composer_version: "2"
+nodejs_version: "22"
+xdebug_enabled: false
+disable_settings_management: false
+
+web_environment:
+  - TYPO3_CONTEXT=Development
+  - TYPO3_DB_DRIVER=mysqli
+  - TYPO3_DB_HOST=db
+  - TYPO3_DB_PORT=3306
+  - TYPO3_DB_DBNAME=db
+  - TYPO3_DB_USERNAME=db
+  - TYPO3_DB_PASSWORD=db
+  - TYPO3_SETUP_ADMIN_USERNAME=admin
+  - TYPO3_SETUP_ADMIN_PASSWORD=Password.1
+  - TYPO3_SETUP_ADMIN_EMAIL=admin@example.com
+  - TYPO3_SERVER_TYPE=apache
+
+hooks:
+  post-start:
+    - exec: bash /var/www/html/.ddev/scripts/post-start.sh

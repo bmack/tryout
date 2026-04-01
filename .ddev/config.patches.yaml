@@ -1,0 +1,14 @@
+# Gerrit Patches
+#
+# Add Gerrit change IDs (comma-separated) to automatically apply on ddev start.
+# The latest patchset of each change is always used.
+#
+# Example: TRYOUT_PATCHES=56947,12345,78901
+#
+# To apply after editing this file, run:
+#   ddev restart
+# Or manually:
+#   ddev tryout patch
+
+web_environment:
+  - TRYOUT_PATCHES=

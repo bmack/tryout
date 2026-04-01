@@ -1,0 +1,385 @@
+#!/usr/bin/env bash
+
+## Description: TYPO3 development toolkit — manage Core, patches, and extensions
+## Usage: tryout [command] [args]
+## Example: "ddev tryout status\nddev tryout download\nddev tryout patch 56947\nddev tryout reset\nddev tryout delete"
+
+set -euo pipefail
+
+source /var/www/html/.ddev/scripts/functions.sh
+
+ACTION="${1:-help}"
+shift || true
+
+# ─────────────────────────────────────────────────────────────────────
+# status — Show project overview
+# ─────────────────────────────────────────────────────────────────────
+cmd_status() {
+    local OK="${GREEN}✓${NC}"
+    local WARN="${YELLOW}!${NC}"
+    local FAIL="${RED}✗${NC}"
+
+    echo ""
+    echo -e "${BOLD}TYPO3 tryout — Status${NC}"
+    echo "─────────────────────────────────────"
+
+    # Core repository
+    if [ ! -d "${CORE_DIR}/.git" ]; then
+        echo -e "  Core:      ${FAIL} not cloned"
+        echo -e "             ${DIM}→ ddev tryout download${NC}"
+        echo "─────────────────────────────────────"
+        return
+    fi
+
+    local current_branch commit_short commit_date tree_state tree_icon
+    current_branch=$(git -C "${CORE_DIR}" branch --show-current 2>/dev/null || echo "detached")
+    commit_short=$(git -C "${CORE_DIR}" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    commit_date=$(git -C "${CORE_DIR}" log -1 --format='%cr' 2>/dev/null || echo "")
+
+    if git -C "${CORE_DIR}" diff --quiet 2>/dev/null && git -C "${CORE_DIR}" diff --cached --quiet 2>/dev/null; then
+        tree_state="clean"
+        tree_icon="${OK}"
+    else
+        tree_state="dirty"
+        tree_icon="${WARN}"
+    fi
+
+    echo -e "  Core:      ${tree_icon} ${current_branch} (${commit_short}) — ${tree_state}"
+    [ -n "${commit_date}" ] && echo -e "             ${DIM}${commit_date}${NC}"
+
+    # Applied patches
+    if git -C "${CORE_DIR}" rev-parse "origin/${BRANCH}" >/dev/null 2>&1; then
+        local ahead
+        ahead=$(git -C "${CORE_DIR}" rev-list --count "origin/${BRANCH}..HEAD" 2>/dev/null || echo "0")
+        if [ "${ahead}" -gt 0 ]; then
+            echo -e "  Patches:   ${OK} ${ahead} applied"
+            git -C "${CORE_DIR}" log --oneline "origin/${BRANCH}..HEAD" 2>/dev/null | head -10 | while IFS= read -r line; do
+                echo -e "             ${DIM}${line}${NC}"
+            done
+        else
+            echo -e "  Patches:   ${DIM}none applied${NC}"
+        fi
+    fi
+
+    # Configured patches
+    local patches="${TRYOUT_PATCHES:-}"
+    patches=$(echo "${patches}" | tr -d '[:space:]')
+    if [ -n "${patches}" ]; then
+        echo -e "  Config:    ${CYAN}TRYOUT_PATCHES=${patches}${NC}"
+    else
+        echo -e "  Config:    ${DIM}no patches configured${NC}"
+    fi
+
+    # Custom extensions
+    local ext_count
+    ext_count=$(find "${PROJECT_ROOT}/packages" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${ext_count}" -gt 0 ]; then
+        echo -e "  Packages:  ${OK} ${ext_count} custom extension(s)"
+        find "${PROJECT_ROOT}/packages" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | while IFS= read -r dir; do
+            echo -e "             ${DIM}$(basename "${dir}")${NC}"
+        done
+    else
+        echo -e "  Packages:  ${DIM}none in packages/${NC}"
+    fi
+
+    # Composer
+    if [ -d "${PROJECT_ROOT}/vendor" ]; then
+        echo -e "  Composer:  ${OK} installed"
+    else
+        echo -e "  Composer:  ${FAIL} not installed"
+        echo -e "             ${DIM}→ ddev composer install${NC}"
+    fi
+
+    # TYPO3
+    if [ -f "${PROJECT_ROOT}/config/system/settings.php" ]; then
+        echo -e "  TYPO3:     ${OK} configured"
+    else
+        echo -e "  TYPO3:     ${FAIL} not set up"
+    fi
+
+    # Site URL
+    echo -e "  Site:      ${BOLD}${DDEV_PRIMARY_URL}${NC}"
+    echo "─────────────────────────────────────"
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# download — Clone or update TYPO3 Core
+# ─────────────────────────────────────────────────────────────────────
+cmd_download() {
+    local reset=false
+    if [ "${1:-}" = "--reset" ] || [ "${1:-}" = "-r" ]; then
+        reset=true
+    fi
+
+    # First-time clone
+    if [ ! -d "${CORE_DIR}" ]; then
+        info "Cloning TYPO3 Core (${BRANCH} branch)..."
+        info "This may take a few minutes on first run."
+        if ! git clone --branch "${BRANCH}" "${CORE_REPO}" "${CORE_DIR}"; then
+            error "Failed to clone TYPO3 Core repository"
+            exit 1
+        fi
+        git -C "${CORE_DIR}" remote add gerrit "${GERRIT_REMOTE}"
+        success "TYPO3 Core cloned into typo3-core/"
+        return
+    fi
+
+    ensure_gerrit_remote
+
+    # Reset mode
+    if [ "${reset}" = "true" ]; then
+        warn "Resetting TYPO3 Core to origin/${BRANCH}..."
+        warn "All local changes and applied patches will be lost."
+        reset_core_to_main
+        success "TYPO3 Core reset to origin/${BRANCH}"
+        rebuild_typo3
+        return
+    fi
+
+    # Update mode
+    info "Updating TYPO3 Core..."
+    git -C "${CORE_DIR}" fetch origin
+
+    local current_branch
+    current_branch=$(git -C "${CORE_DIR}" branch --show-current)
+    if [ "${current_branch}" != "${BRANCH}" ]; then
+        error "Not on ${BRANCH} branch (currently on: ${current_branch})"
+        error "  → Reset: ddev tryout download --reset"
+        exit 1
+    fi
+
+    if ! git -C "${CORE_DIR}" diff --quiet || ! git -C "${CORE_DIR}" diff --cached --quiet; then
+        error "Working tree has uncommitted changes"
+        error "  → Reset: ddev tryout download --reset"
+        exit 1
+    fi
+
+    if ! git -C "${CORE_DIR}" pull --rebase origin "${BRANCH}"; then
+        error "Pull failed"
+        error "  → Reset: ddev tryout download --reset"
+        exit 1
+    fi
+
+    success "TYPO3 Core updated to latest origin/${BRANCH}"
+    rebuild_typo3
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# patch — Apply Gerrit patches
+# ─────────────────────────────────────────────────────────────────────
+cmd_patch() {
+    require_core
+    ensure_gerrit_remote
+
+    if [ -n "${1:-}" ]; then
+        apply_patch "$1"
+        if [ "${PATCH_RESULT}" = "applied" ]; then
+            rebuild_typo3
+        fi
+    else
+        local patches="${TRYOUT_PATCHES:-}"
+        patches=$(echo "${patches}" | tr -d '[:space:]')
+
+        if [ -z "${patches}" ]; then
+            info "No patches configured."
+            echo ""
+            echo "Usage:"
+            echo "  ddev tryout patch <change-id>   Apply a single Gerrit patch"
+            echo "  ddev tryout patch               Apply all from config"
+            echo ""
+            echo "Configure in .ddev/config.patches.yaml:"
+            echo "  TRYOUT_PATCHES=56947,12345"
+            return
+        fi
+
+        apply_all_patches
+        if [ "${PATCHES_APPLIED:-0}" -gt 0 ]; then
+            rebuild_typo3
+        fi
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# reset — Reset Core to latest main and rebuild
+# ─────────────────────────────────────────────────────────────────────
+cmd_reset() {
+    require_core
+
+    echo ""
+    info "Resetting TYPO3 Core to latest origin/${BRANCH}..."
+    echo ""
+
+    info "[1/2] Resetting git repository..."
+    reset_core_to_main
+    success "Git reset to origin/${BRANCH}"
+
+    info "[2/2] Rebuilding..."
+    rebuild_typo3
+
+    echo ""
+    success "Reset complete! Site: ${DDEV_PRIMARY_URL}"
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# delete — Wipe database and fileadmin, fresh TYPO3 setup
+# ─────────────────────────────────────────────────────────────────────
+cmd_delete() {
+    echo ""
+    echo -e "${YELLOW}${BOLD}Warning:${NC} This will delete the database and all files in fileadmin/."
+    echo ""
+    read -r -p "Are you sure? [y/N] " confirm
+    if [[ ! "${confirm}" =~ ^[Yy]$ ]]; then
+        info "Aborted."
+        return
+    fi
+
+    echo ""
+
+    info "[1/5] Dropping and recreating database..."
+    mysql -uroot -proot -e "DROP DATABASE IF EXISTS db; CREATE DATABASE db;" || {
+        error "Failed to reset database"
+        exit 1
+    }
+    success "Database recreated"
+
+    info "[2/5] Deleting fileadmin/ contents..."
+    if [ -d "${PROJECT_ROOT}/public/fileadmin" ]; then
+        find "${PROJECT_ROOT}/public/fileadmin" -mindepth 1 -delete 2>/dev/null || true
+    fi
+    success "fileadmin/ cleared"
+
+    info "[3/5] Removing TYPO3 configuration..."
+    rm -f "${PROJECT_ROOT}/config/system/settings.php"
+    success "Configuration removed"
+
+    info "[4/5] Running TYPO3 setup..."
+    if ! vendor/bin/typo3 setup --no-interaction --force --server-type=apache; then
+        error "TYPO3 setup failed"
+        exit 1
+    fi
+    success "TYPO3 setup complete"
+
+    info "[5/5] Setting up extensions and flushing caches..."
+    vendor/bin/typo3 extension:setup 2>/dev/null || warn "extension:setup had warnings"
+    vendor/bin/typo3 cache:flush 2>/dev/null || warn "cache:flush had warnings"
+    success "Extensions ready, caches flushed"
+
+    echo ""
+    success "Fresh setup complete!"
+    echo -e "  ${BOLD}Backend:${NC}  ${DDEV_PRIMARY_URL}/typo3/"
+    echo -e "  ${BOLD}Login:${NC}    admin / Password.1"
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# checkout — Switch TYPO3 Core branch (version)
+# ─────────────────────────────────────────────────────────────────────
+cmd_checkout() {
+    local target_branch="${1:-}"
+
+    if [ -z "${target_branch}" ]; then
+        error "Usage: ddev tryout checkout <branch>"
+        echo ""
+        echo "Examples:"
+        echo "  ddev tryout checkout main     # latest development (v14)"
+        echo "  ddev tryout checkout 13.4     # v13 LTS"
+        echo "  ddev tryout checkout 12.4     # v12 LTS"
+
+        if [ -d "${CORE_DIR}/.git" ]; then
+            echo ""
+            echo "Available remote branches:"
+            git -C "${CORE_DIR}" ls-remote --heads origin 2>/dev/null \
+                | awk -F/ '{print "  " $NF}' \
+                | sort -V
+        fi
+        return 1
+    fi
+
+    require_core
+
+    info "Fetching latest branches..."
+    git -C "${CORE_DIR}" fetch origin
+
+    # Verify the branch exists on the remote
+    if ! git -C "${CORE_DIR}" ls-remote --exit-code --heads origin "${target_branch}" >/dev/null 2>&1; then
+        error "Branch '${target_branch}' does not exist on origin"
+        echo ""
+        echo "Available branches:"
+        git -C "${CORE_DIR}" ls-remote --heads origin 2>/dev/null \
+            | awk -F/ '{print "  " $NF}' \
+            | sort -V
+        return 1
+    fi
+
+    local current_branch
+    current_branch=$(git -C "${CORE_DIR}" branch --show-current 2>/dev/null || echo "detached")
+
+    if [ "${current_branch}" = "${target_branch}" ]; then
+        info "Already on ${target_branch}, resetting to latest origin/${target_branch}..."
+    else
+        info "Switching from ${current_branch} to ${target_branch}..."
+    fi
+
+    # Reset to the target branch
+    git -C "${CORE_DIR}" checkout "${target_branch}" 2>/dev/null \
+        || git -C "${CORE_DIR}" checkout -b "${target_branch}" "origin/${target_branch}"
+    git -C "${CORE_DIR}" reset --hard "origin/${target_branch}"
+    git -C "${CORE_DIR}" clean -fd
+    rm -rf var/cache/*
+
+    success "Core switched to ${target_branch}"
+    echo ""
+    echo "Next steps:"
+    echo "  1. On your host, run:  make composer"
+    echo "  2. Then:               ddev composer install"
+    echo ""
+    echo "This regenerates composer.json to match the system extensions"
+    echo "available on the ${target_branch} branch."
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# help — Show available commands
+# ─────────────────────────────────────────────────────────────────────
+cmd_help() {
+    echo ""
+    echo -e "${BOLD}ddev tryout${NC} — TYPO3 development toolkit"
+    echo ""
+    echo "Commands:"
+    echo -e "  ${BOLD}status${NC}              Show project overview"
+    echo -e "  ${BOLD}download${NC}            Clone or update TYPO3 Core"
+    echo -e "  ${BOLD}download --reset${NC}    Hard reset Core to current branch"
+    echo -e "  ${BOLD}checkout <branch>${NC}   Switch TYPO3 version (main, 13.4, 12.4, ...)"
+    echo -e "  ${BOLD}patch <change-id>${NC}   Apply a Gerrit patch by change ID"
+    echo -e "  ${BOLD}patch${NC}               Apply all patches from config"
+    echo -e "  ${BOLD}reset${NC}               Reset Core to current branch + rebuild"
+    echo -e "  ${BOLD}delete${NC}              Wipe DB + fileadmin, fresh setup"
+    echo -e "  ${BOLD}help${NC}                Show this help"
+    echo ""
+    echo "Custom extensions:"
+    echo "  Place extensions in packages/ and run:"
+    echo "    ddev composer require vendor/my-extension:@dev"
+    echo ""
+    echo "Gerrit patches (auto-apply on start):"
+    echo "  Edit .ddev/config.patches.yaml:"
+    echo "    TRYOUT_PATCHES=56947,12345"
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# Dispatch
+# ─────────────────────────────────────────────────────────────────────
+case "${ACTION}" in
+    status)   cmd_status "$@" ;;
+    download) cmd_download "$@" ;;
+    checkout) cmd_checkout "$@" ;;
+    patch)    cmd_patch "$@" ;;
+    reset)    cmd_reset "$@" ;;
+    delete)   cmd_delete "$@" ;;
+    help)     cmd_help ;;
+    *)
+        error "Unknown command: ${ACTION}"
+        cmd_help
+        exit 1
+        ;;
+esac

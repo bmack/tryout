@@ -1,0 +1,37 @@
+# TYPO3 Core clone (managed by ddev tryout download)
+/typo3-core/
+
+# Composer artifacts
+/vendor/
+/public/
+/var/
+composer.lock
+
+# TYPO3 generated config
+/config/sites/
+/config/system/settings.php
+
+# DDEV — config.yaml is generated per-instance (worktree/clone friendly)
+/.ddev/config.yaml
+/.ddev/config.local.yaml
+/.ddev/.webimageBuild/
+/.ddev/.homeadditions/
+/.ddev/db_snapshots/
+/.ddev/.ddev-docker-compose-full.yaml
+
+# Composer auth (may contain tokens)
+/auth.json
+
+# Custom extensions are user-managed
+/packages/*
+!/packages/.gitkeep
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
