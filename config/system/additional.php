@@ -1,6 +1,12 @@
 <?php
 
 if (getenv('IS_DDEV_PROJECT') == 'true') {
+    // Derive DB driver from DDEV_DATABASE (e.g. "mariadb:10.11", "postgres:16")
+    $ddevDatabase = getenv('DDEV_DATABASE') ?: 'mariadb:10.11';
+    $isPostgres = str_starts_with($ddevDatabase, 'postgres');
+    $dbDriver = $isPostgres ? 'pdo_pgsql' : 'mysqli';
+    $dbPort = $isPostgres ? 5432 : 3306;
+
     $GLOBALS['TYPO3_CONF_VARS'] = array_replace_recursive(
         $GLOBALS['TYPO3_CONF_VARS'],
         [
@@ -8,10 +14,10 @@ if (getenv('IS_DDEV_PROJECT') == 'true') {
                 'Connections' => [
                     'Default' => [
                         'dbname' => 'db',
-                        'driver' => 'mysqli',
+                        'driver' => $dbDriver,
                         'host' => 'db',
                         'password' => 'db',
-                        'port' => 3306,
+                        'port' => $dbPort,
                         'user' => 'db',
                     ],
                 ],

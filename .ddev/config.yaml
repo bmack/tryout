@@ -12,7 +12,6 @@ disable_settings_management: false
 
 web_environment:
   - TYPO3_CONTEXT=Development
-  - TYPO3_DB_DRIVER=mysqli
   - TYPO3_DB_HOST=db
   - TYPO3_DB_PORT=3306
   - TYPO3_DB_DBNAME=db
@@ -21,7 +20,6 @@ web_environment:
   - TYPO3_SETUP_ADMIN_USERNAME=admin
   - TYPO3_SETUP_ADMIN_PASSWORD=Password.1
   - TYPO3_SETUP_ADMIN_EMAIL=admin@example.com
-  - TYPO3_SERVER_TYPE=apache
 
 hooks:
   post-start:

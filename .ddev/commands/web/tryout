@@ -237,10 +237,16 @@ cmd_delete() {
     echo ""
 
     info "[1/5] Dropping and recreating database..."
-    mysql -uroot -proot -e "DROP DATABASE IF EXISTS db; CREATE DATABASE db;" || {
-        error "Failed to reset database"
-        exit 1
-    }
+    local ddev_db="${DDEV_DATABASE:-mariadb}"
+    if [[ "${ddev_db}" == postgres* ]]; then
+        PGPASSWORD=db dropdb -U db -h db --if-exists db 2>/dev/null || true
+        PGPASSWORD=db createdb -U db -h db db || { error "Failed to reset database"; exit 1; }
+    else
+        mysql -uroot -proot -e "DROP DATABASE IF EXISTS db; CREATE DATABASE db;" || {
+            error "Failed to reset database"
+            exit 1
+        }
+    fi
     success "Database recreated"
 
     info "[2/5] Deleting fileadmin/ contents..."
@@ -253,8 +259,14 @@ cmd_delete() {
     rm -f "${PROJECT_ROOT}/config/system/settings.php"
     success "Configuration removed"
 
-    info "[4/5] Running TYPO3 setup..."
-    if ! vendor/bin/typo3 setup --no-interaction --force --server-type=apache; then
+    # Derive server type from DDEV webserver config
+    local server_type="other"
+    case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in
+        apache*) server_type="apache" ;;
+    esac
+
+    info "[4/5] Running TYPO3 setup (server-type=${server_type})..."
+    if ! vendor/bin/typo3 setup --no-interaction --force --server-type="${server_type}"; then
         error "TYPO3 setup failed"
         exit 1
     fi

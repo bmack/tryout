@@ -54,10 +54,16 @@ success "Composer dependencies installed"
 
 # --- Step 4: TYPO3 setup (first time only) ---
 if [ ! -f "${PROJECT_ROOT}/config/system/settings.php" ]; then
-    info "[4/5] Running TYPO3 setup (first time)..."
-    if ! vendor/bin/typo3 setup --no-interaction --force --server-type=apache; then
+    # Derive server type from DDEV webserver config
+    case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in
+        apache*) SERVER_TYPE="apache" ;;
+        *)       SERVER_TYPE="other" ;;
+    esac
+
+    info "[4/5] Running TYPO3 setup (first time, server-type=${SERVER_TYPE})..."
+    if ! vendor/bin/typo3 setup --no-interaction --force --server-type="${SERVER_TYPE}"; then
         error "TYPO3 setup failed"
-        error "  → Try: ddev exec vendor/bin/typo3 setup --no-interaction --force --server-type=apache"
+        error "  → Try: ddev exec vendor/bin/typo3 setup --no-interaction --force --server-type=${SERVER_TYPE}"
         exit 1
     fi
     success "TYPO3 setup complete"
