@@ -91,22 +91,14 @@ resolve_patch_ref() {
     json=$(echo "${response}" | tail -n +2)
 
     local result
-    result=$(echo "${json}" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    rev_hash = data['current_revision']
-    rev = data['revisions'][rev_hash]
-    subject = data.get('subject', 'No subject').replace('\n', ' ').strip()
-    status = data.get('status', 'UNKNOWN')
-    print(subject)
-    print(rev['ref'])
-    print(rev['_number'])
-    print(status)
-except (KeyError, json.JSONDecodeError) as e:
-    print(f'ERROR: {e}', file=sys.stderr)
-    sys.exit(1)
-" 2>/dev/null) || {
+    result=$(echo "${json}" | jq -r '
+        .current_revision as $rev |
+        .revisions[$rev] as $r |
+        (.subject // "No subject" | gsub("\n"; " ") | ltrimstr(" ") | rtrimstr(" ")),
+        $r.ref,
+        ($r._number | tostring),
+        (.status // "UNKNOWN")
+    ' 2>/dev/null) || {
         error "Failed to parse Gerrit response for change ${change_id}"
         error "  → Verify: ${GERRIT_URL}${change_id}"
         return 1
