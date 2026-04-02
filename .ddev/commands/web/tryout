@@ -259,6 +259,13 @@ cmd_delete() {
     rm -f "${PROJECT_ROOT}/config/system/settings.php"
     success "Configuration removed"
 
+    # Derive SQL type from DDEV
+    local ddev_db="${DDEV_DATABASE:-mariadb}"
+    export TYPO3_DB_DRIVER="mysqli"
+    if [[ "${ddev_db}" == postgres* ]]; then
+      export TYPO3_DB_DRIVER="postgres"
+    fi
+
     # Derive server type from DDEV webserver config
     local server_type="other"
     case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in
