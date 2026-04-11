@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+
+## Description: Prepare the instance for TYPO3 Core contribution (Gerrit hooks, push URL, commit template)
+## Usage: cs [setup|doctor|uninstall] [username]
+## Example: "ddev cs\nddev cs setup jdoe\nddev cs doctor\nddev cs uninstall"
+
+set -euo pipefail
+
+source /var/www/html/.ddev/scripts/functions.sh
+
+ACTION="${1:-setup}"
+shift || true
+
+# ─────────────────────────────────────────────────────────────────────
+# setup — Wire up hooks, template, push URL
+# ─────────────────────────────────────────────────────────────────────
+cmd_cs_setup() {
+    require_core
+
+    echo ""
+    echo -e "${BOLD}TYPO3 Core — Contribution Setup${NC}"
+    echo "─────────────────────────────────────"
+    echo ""
+
+    info "[1/5] Resolving Gerrit username..."
+    if ! resolve_gerrit_user "${1:-}"; then
+        exit 1
+    fi
+    echo -e "       ${DIM}user: ${GERRIT_USER}${NC}"
+    echo ""
+
+    info "[2/5] Installing commit-msg hook (Change-Id)..."
+    install_commit_msg_hook || warn "commit-msg hook install skipped"
+    echo ""
+
+    info "[3/5] Installing pre-commit hook (CGL checks)..."
+    install_pre_commit_hook || warn "pre-commit hook install skipped"
+    echo ""
+
+    info "[4/5] Installing commit-message template..."
+    install_commit_template || warn "template install skipped"
+    echo ""
+
+    info "[5/5] Configuring Gerrit push URL..."
+    configure_gerrit_push_url "${GERRIT_USER}"
+    echo ""
+
+    # Optional SSH probe — informational only
+    info "Probing Gerrit SSH (${GERRIT_USER}@${GERRIT_SSH_HOST}:${GERRIT_SSH_PORT})..."
+    if verify_gerrit_ssh "${GERRIT_USER}"; then
+        success "SSH reachable — you can push to Gerrit"
+    else
+        warn "SSH probe failed — upload your public key at:"
+        echo -e "       ${DIM}https://review.typo3.org/settings/#SSHKeys${NC}"
+    fi
+
+    echo ""
+    echo "─────────────────────────────────────"
+    success "Contribution setup complete!"
+    echo ""
+    echo -e "  ${BOLD}Push a change for review:${NC}"
+    echo -e "    ${DIM}cd typo3-core && git push origin HEAD:refs/for/${BRANCH}${NC}"
+    echo ""
+    echo -e "  ${BOLD}Diagnose state:${NC} ddev cs doctor"
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# doctor — Diagnose current contribution setup
+# ─────────────────────────────────────────────────────────────────────
+cmd_cs_doctor() {
+    require_core
+    inspect_contribution_setup
+
+    local OK="${GREEN}✓${NC}"
+    local FAIL="${RED}✗${NC}"
+    local WARN="${YELLOW}!${NC}"
+
+    echo ""
+    echo -e "${BOLD}Contribution Setup — Doctor${NC}"
+    echo "─────────────────────────────────────"
+
+    if [ -n "${CS_USER}" ]; then
+        echo -e "  Gerrit user:     ${OK} ${CS_USER}"
+    else
+        echo -e "  Gerrit user:     ${FAIL} not set"
+        echo -e "                   ${DIM}→ ddev cs setup <username>${NC}"
+    fi
+
+    if [ "${CS_HOOK_COMMIT_MSG}" = "1" ]; then
+        echo -e "  commit-msg hook: ${OK} installed"
+    else
+        echo -e "  commit-msg hook: ${FAIL} missing"
+    fi
+
+    if [ "${CS_HOOK_PRE_COMMIT}" = "1" ]; then
+        echo -e "  pre-commit hook: ${OK} installed"
+    else
+        echo -e "  pre-commit hook: ${FAIL} missing"
+    fi
+
+    if [ "${CS_TEMPLATE}" = "1" ]; then
+        echo -e "  Commit template: ${OK} configured"
+    else
+        echo -e "  Commit template: ${FAIL} not set"
+    fi
+
+    if echo "${CS_PUSH_URL}" | grep -q "^ssh://.*@${GERRIT_SSH_HOST}"; then
+        echo -e "  Push URL:        ${OK} ${CS_PUSH_URL}"
+    elif [ -n "${CS_PUSH_URL}" ]; then
+        echo -e "  Push URL:        ${WARN} ${CS_PUSH_URL}"
+        echo -e "                   ${DIM}(not pointing at Gerrit SSH)${NC}"
+    else
+        echo -e "  Push URL:        ${FAIL} origin missing"
+    fi
+
+    # Live SSH check (only if we have a user)
+    if [ -n "${CS_USER}" ]; then
+        if verify_gerrit_ssh "${CS_USER}"; then
+            echo -e "  Gerrit SSH:      ${OK} reachable"
+        else
+            echo -e "  Gerrit SSH:      ${FAIL} unreachable"
+            echo -e "                   ${DIM}→ https://review.typo3.org/settings/#SSHKeys${NC}"
+        fi
+    fi
+
+    echo "─────────────────────────────────────"
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# uninstall — Revert contribution setup
+# ─────────────────────────────────────────────────────────────────────
+cmd_cs_uninstall() {
+    require_core
+
+    info "Removing git hooks..."
+    remove_hooks
+
+    info "Unsetting commit template..."
+    git -C "${CORE_DIR}" config --unset commit.template 2>/dev/null || true
+    rm -f "${CORE_DIR}/.gitmessage.txt"
+
+    info "Resetting origin push URL to fetch URL..."
+    local fetch_url
+    fetch_url=$(git -C "${CORE_DIR}" remote get-url origin 2>/dev/null || echo "")
+    if [ -n "${fetch_url}" ]; then
+        git -C "${CORE_DIR}" remote set-url --push origin "${fetch_url}"
+    fi
+
+    git -C "${CORE_DIR}" config --unset tryout.gerritUser 2>/dev/null || true
+    success "Contribution setup removed"
+}
+
+cmd_cs_help() {
+    echo ""
+    echo -e "${BOLD}ddev cs${NC} — TYPO3 Core contribution setup"
+    echo ""
+    echo "Commands:"
+    echo -e "  ${BOLD}setup [user]${NC}   Install hooks, template, and Gerrit push URL (default)"
+    echo -e "  ${BOLD}doctor${NC}         Diagnose the current contribution setup"
+    echo -e "  ${BOLD}uninstall${NC}      Remove hooks, template, and reset push URL"
+    echo -e "  ${BOLD}help${NC}           Show this help"
+    echo ""
+    echo "Username resolution order:"
+    echo "  1. argument:   ddev cs setup jdoe"
+    echo "  2. env:        TRYOUT_GERRIT_USER=jdoe"
+    echo "  3. git config: tryout.gerritUser (cached from previous setup)"
+    echo "  4. prompt      (interactive)"
+    echo ""
+}
+
+case "${ACTION}" in
+    setup)     cmd_cs_setup "$@" ;;
+    doctor)    cmd_cs_doctor ;;
+    uninstall) cmd_cs_uninstall ;;
+    help|-h|--help) cmd_cs_help ;;
+    *)
+        error "Unknown command: ${ACTION}"
+        cmd_cs_help
+        exit 1
+        ;;
+esac

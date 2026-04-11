@@ -40,6 +40,55 @@ ddev tryout patch <change-id>   Apply a Gerrit patch
 ddev tryout patch               Apply all patches from config
 ddev tryout reset               Reset Core to current branch + rebuild
 ddev tryout delete              Wipe DB + fileadmin, fresh setup
+
+ddev cs                         Prepare instance for Core contribution
+ddev cs doctor                  Check hooks, template, and push URL
+ddev cs uninstall               Remove hooks and reset push URL
+```
+
+## Contributing to TYPO3 Core
+
+`ddev start` keeps the instance read-only against Gerrit — you can pull and
+test patches but not submit them. Run **`ddev cs`** once to turn the instance
+into a full contribution workspace:
+
+```bash
+ddev cs             # prompts for your review.typo3.org username
+ddev cs setup jdoe  # or pass it explicitly
+```
+
+This is opt-in (nothing runs automatically on `ddev start`) and installs:
+
+1. The **Gerrit `commit-msg` hook** — adds a `Change-Id` footer to every commit.
+2. The **TYPO3 Core `pre-commit` hook** — runs CGL / PHP-CS-Fixer checks.
+3. A **commit-message template** — wired via `commit.template`, opens a
+   TYPO3-style skeleton (`[BUGFIX]`, `Resolves:`, `Releases:` …) whenever
+   you run `git commit` without `-m`.
+4. The **Gerrit SSH push URL** on `origin` — so `git push origin HEAD:refs/for/main`
+   submits your change for review.
+
+Check the state at any time:
+
+```bash
+ddev cs doctor
+```
+
+Doctor reports whether each piece is wired up and probes Gerrit SSH live
+(requires a public key uploaded at https://review.typo3.org/settings/#SSHKeys).
+
+The username is resolved from (in order): command argument → `TRYOUT_GERRIT_USER`
+environment variable → cached `tryout.gerritUser` git config → interactive prompt.
+To persist it across instances, set it in `.ddev/config.local.yaml`:
+
+```yaml
+web_environment:
+  - TRYOUT_GERRIT_USER=jdoe
+```
+
+To revert everything:
+
+```bash
+ddev cs uninstall
 ```
 
 ## Working with Gerrit Patches
@@ -156,11 +205,15 @@ ddev start
 ```text
 tryout/
 ├── .ddev/
-│   ├── commands/web/tryout       # The ddev tryout command
+│   ├── commands/web/
+│   │   ├── tryout                # The ddev tryout command
+│   │   └── cs                    # Contribution-setup command (ddev cs)
 │   ├── scripts/
-│   │   ├── functions.sh          # Shared helpers (Gerrit API, patching, rebuild)
-│   │   ├── post-start.sh        # Runs on ddev start (clone, patch, setup)
-│   │   └── sync-composer.php    # Regenerates composer.json from sysexts
+│   │   ├── functions.sh          # Shared helpers (Gerrit API, patching, hooks)
+│   │   ├── post-start.sh         # Runs on ddev start (clone, patch, setup)
+│   │   └── sync-composer.php     # Regenerates composer.json from sysexts
+│   ├── templates/
+│   │   └── gitmessage.txt        # Commit-message template installed by `ddev cs`
 │   ├── config.yaml               # DDEV settings (PHP, DB, env, hooks)
 │   └── config.patches.yaml       # Gerrit patch list (optional)
 ├── config/system/additional.php  # TYPO3 DB + mail + GFX config for DDEV
