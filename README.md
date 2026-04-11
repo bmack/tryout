@@ -172,9 +172,12 @@ folder in there and require it:
 
 ```bash
 ddev composer require myvendor/my-extension:@dev
+ddev typo3 extension:setup
 ```
 
 Composer resolves it from the local path — no Packagist publish required.
+Run `ddev typo3 extension:setup` after every `composer require` to activate
+the extension and run its database schema updates.
 This makes it easy to develop an extension side-by-side with Core.
 
 ## Running Multiple Instances
