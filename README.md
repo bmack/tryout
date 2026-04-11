@@ -9,11 +9,20 @@ anyone who wants to quickly spin up a TYPO3 instance backed by the actual Core r
 
 ## Quick Start
 
+Pick a folder name for your project (e.g. `my-typo3-site`) and run:
+
 ```bash
-git clone https://github.com/bmack/tryout.git tryout
-cd tryout
+git clone --depth=1 https://github.com/bmack/tryout.git my-typo3-site
+cd my-typo3-site
+rm -rf .git && git init
 ddev start
 ```
+
+The DDEV project name is derived from the folder, so `my-typo3-site` becomes
+`https://my-typo3-site.ddev.site/`.
+
+The `--depth=1` plus `git init` gives you a clean repository with no history,
+ready to be pushed somewhere as your own project.
 On the first run this will:
 
 1. Clone the TYPO3 Core repository
@@ -225,3 +234,19 @@ cherry-pick automatically and report the failure.
 - [DDEV](https://ddev.readthedocs.io/en/stable/) v1.24+
 - Docker Desktop or Colima
 - Git
+
+## Contributing
+
+tryout itself lives at [github.com/bmack/tryout](https://github.com/bmack/tryout).
+If you have improvements to the scaffold — better defaults, new `ddev tryout`
+subcommands, fixes to the post-start hook, documentation tweaks — pull requests
+and issues are welcome there.
+
+Note that contributions to **TYPO3 Core** itself do not go through this repo.
+Core development happens on [review.typo3.org](https://review.typo3.org) via Gerrit.
+tryout is just a local environment for working on Core; once you have a patch ready,
+push it to Gerrit as usual.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
