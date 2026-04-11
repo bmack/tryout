@@ -97,6 +97,25 @@ cmd_status() {
         echo -e "  TYPO3:     ${FAIL} not set up"
     fi
 
+    # Contribution setup (Gerrit hooks / push URL)
+    inspect_contribution_setup
+    local cs_parts=()
+    [ "${CS_HOOK_COMMIT_MSG}" = "1" ] && cs_parts+=("commit-msg")
+    [ "${CS_HOOK_PRE_COMMIT}" = "1" ] && cs_parts+=("pre-commit")
+    [ "${CS_TEMPLATE}" = "1" ] && cs_parts+=("template")
+    if echo "${CS_PUSH_URL}" | grep -q "^ssh://.*@${GERRIT_SSH_HOST}"; then
+        cs_parts+=("push-url")
+    fi
+    if [ ${#cs_parts[@]} -eq 4 ]; then
+        echo -e "  Contrib:   ${OK} ready (${CS_USER:-?})"
+    elif [ ${#cs_parts[@]} -gt 0 ]; then
+        echo -e "  Contrib:   ${WARN} partial (${cs_parts[*]})"
+        echo -e "             ${DIM}→ ddev cs doctor${NC}"
+    else
+        echo -e "  Contrib:   ${DIM}not configured${NC}"
+        echo -e "             ${DIM}→ ddev cs${NC}"
+    fi
+
     # Site URL
     echo -e "  Site:      ${BOLD}${DDEV_PRIMARY_URL}${NC}"
     echo "─────────────────────────────────────"

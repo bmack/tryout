@@ -9,6 +9,10 @@ CORE_REPO="https://github.com/typo3/typo3.git"
 GERRIT_REMOTE="https://review.typo3.org/Packages/TYPO3.CMS"
 GERRIT_API="https://review.typo3.org"
 GERRIT_URL="https://review.typo3.org/c/Packages/TYPO3.CMS/+/"
+GERRIT_SSH_HOST="review.typo3.org"
+GERRIT_SSH_PORT="29418"
+GERRIT_PROJECT="Packages/TYPO3.CMS"
+COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/templates/gitmessage.txt"
 
 # Resolve the active branch: use TRYOUT_BRANCH env if set, otherwise detect
 # from the Core clone, falling back to "main".
@@ -267,4 +271,124 @@ apply_all_patches() {
     else
         success "${applied} patch(es) applied, ${skipped} skipped."
     fi
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# Contribution setup helpers (TYPO3 Core / Gerrit workflow)
+# ─────────────────────────────────────────────────────────────────────
+
+# Resolve the Gerrit username.
+# Priority: $1 arg > TRYOUT_GERRIT_USER env > git config tryout.gerritUser > prompt.
+# Stores result via `git -C CORE_DIR config tryout.gerritUser` and echoes it.
+resolve_gerrit_user() {
+    local user="${1:-}"
+    if [ -z "${user}" ]; then
+        user="${TRYOUT_GERRIT_USER:-}"
+    fi
+    if [ -z "${user}" ]; then
+        user=$(git -C "${CORE_DIR}" config --get tryout.gerritUser 2>/dev/null || true)
+    fi
+    if [ -z "${user}" ]; then
+        if [ -t 0 ]; then
+            read -r -p "Gerrit username (review.typo3.org): " user
+        fi
+    fi
+    if [ -z "${user}" ]; then
+        error "No Gerrit username provided."
+        error "  → ddev cs setup <username>   or   export TRYOUT_GERRIT_USER=<username>"
+        return 1
+    fi
+    git -C "${CORE_DIR}" config tryout.gerritUser "${user}"
+    GERRIT_USER="${user}"
+}
+
+# Install the Gerrit commit-msg hook (Change-Id) from TYPO3 Core's copy.
+install_commit_msg_hook() {
+    local src="${CORE_DIR}/Build/git-hooks/commit-msg"
+    local dst="${CORE_DIR}/.git/hooks/commit-msg"
+
+    if [ ! -f "${src}" ]; then
+        warn "commit-msg hook not found at ${src} — Core may be too old."
+        return 1
+    fi
+    cp "${src}" "${dst}"
+    chmod +x "${dst}"
+    success "Installed commit-msg hook (Change-Id generator)"
+}
+
+# Install the TYPO3 Core pre-commit hook (CGL / PHP-CS-Fixer checks).
+install_pre_commit_hook() {
+    local src="${CORE_DIR}/Build/git-hooks/unix+mac/pre-commit"
+    local dst="${CORE_DIR}/.git/hooks/pre-commit"
+
+    if [ ! -f "${src}" ]; then
+        warn "pre-commit hook not found at ${src}"
+        return 1
+    fi
+    cp "${src}" "${dst}"
+    chmod +x "${dst}"
+    success "Installed pre-commit hook (CGL checks)"
+}
+
+# Remove installed hooks.
+remove_hooks() {
+    rm -f "${CORE_DIR}/.git/hooks/commit-msg" "${CORE_DIR}/.git/hooks/pre-commit"
+    success "Removed commit-msg and pre-commit hooks"
+}
+
+# Install the commit-message template and wire it into git config.
+install_commit_template() {
+    if [ ! -f "${COMMIT_TEMPLATE_SRC}" ]; then
+        warn "Commit template not found at ${COMMIT_TEMPLATE_SRC}"
+        return 1
+    fi
+    local dst="${CORE_DIR}/.gitmessage.txt"
+    cp "${COMMIT_TEMPLATE_SRC}" "${dst}"
+    git -C "${CORE_DIR}" config commit.template ".gitmessage.txt"
+    success "Commit template installed (${DIM}git commit opens template${NC})"
+}
+
+# Configure push URL to Gerrit SSH so `git push` submits to review.
+configure_gerrit_push_url() {
+    local user="${1:-${GERRIT_USER:-}}"
+    if [ -z "${user}" ]; then
+        error "configure_gerrit_push_url: no username"
+        return 1
+    fi
+    local push_url="ssh://${user}@${GERRIT_SSH_HOST}:${GERRIT_SSH_PORT}/${GERRIT_PROJECT}"
+    git -C "${CORE_DIR}" remote set-url --push origin "${push_url}"
+    # Refs go to refs/for/<branch> — user still needs `git push origin HEAD:refs/for/main`.
+    success "Push URL set: ${DIM}${push_url}${NC}"
+}
+
+# Test Gerrit SSH reachability. Returns 0 on success.
+verify_gerrit_ssh() {
+    local user="${1:-${GERRIT_USER:-}}"
+    if [ -z "${user}" ]; then
+        return 1
+    fi
+    ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+        -p "${GERRIT_SSH_PORT}" "${user}@${GERRIT_SSH_HOST}" gerrit version >/dev/null 2>&1
+}
+
+# Report the current state of contribution setup.
+# Sets: CS_HOOK_COMMIT_MSG, CS_HOOK_PRE_COMMIT, CS_TEMPLATE, CS_PUSH_URL, CS_USER (0/1 flags or value)
+inspect_contribution_setup() {
+    CS_HOOK_COMMIT_MSG=0
+    CS_HOOK_PRE_COMMIT=0
+    CS_TEMPLATE=0
+    CS_PUSH_URL=""
+    CS_USER=""
+
+    [ -x "${CORE_DIR}/.git/hooks/commit-msg" ] && CS_HOOK_COMMIT_MSG=1
+    [ -x "${CORE_DIR}/.git/hooks/pre-commit" ]  && CS_HOOK_PRE_COMMIT=1
+
+    local tmpl
+    tmpl=$(git -C "${CORE_DIR}" config --get commit.template 2>/dev/null || true)
+    if [ -n "${tmpl}" ] && [ -f "${CORE_DIR}/${tmpl}" ]; then
+        CS_TEMPLATE=1
+    fi
+
+    CS_PUSH_URL=$(git -C "${CORE_DIR}" remote get-url --push origin 2>/dev/null || true)
+    CS_USER=$(git -C "${CORE_DIR}" config --get tryout.gerritUser 2>/dev/null || true)
 }
