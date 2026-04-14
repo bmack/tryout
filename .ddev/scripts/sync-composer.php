@@ -12,6 +12,7 @@
 
 $projectRoot = getenv('PROJECT_ROOT') ?: '/var/www/html';
 $composerFile = $projectRoot . '/composer.json';
+$composerLockFile = $projectRoot . '/composer.lock';
 $sysextDir = $projectRoot . '/typo3-core/typo3/sysext';
 
 if (!is_dir($sysextDir)) {
@@ -85,4 +86,7 @@ $composerData['require'] = $newRequire;
 $json = json_encode($composerData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
 file_put_contents($composerFile, $json);
 
+// The lock file needs to be removed so that the next "composer install" step will use
+// current versions. This is e.g. required when Core removes an extension like EXT:setup
+@unlink($composerLockFile);
 echo count($sysextNames) . " system extensions written to composer.json\n";
