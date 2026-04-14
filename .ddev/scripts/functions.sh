@@ -342,10 +342,16 @@ install_commit_template() {
         warn "Commit template not found at ${COMMIT_TEMPLATE_SRC}"
         return 1
     fi
-    local dst="${CORE_DIR}/.gitmessage.txt"
-    cp "${COMMIT_TEMPLATE_SRC}" "${dst}"
-    git -C "${CORE_DIR}" config commit.template ".gitmessage.txt"
-    success "Commit template installed (${DIM}git commit opens template${NC})"
+    # Point git directly at the canonical template under .ddev/templates/.
+    # The path is given relative to the typo3-core working tree so it resolves
+    # correctly both on the host (when running `git commit` from typo3-core/)
+    # and inside the DDEV container.
+    local tmpl_path="../.ddev/templates/gitmessage.txt"
+    git -C "${CORE_DIR}" config commit.template "${tmpl_path}"
+    # Drop any leftover copy from an older setup; the canonical file lives
+    # in .ddev/templates/ now.
+    rm -f "${CORE_DIR}/.gitmessage.txt"
+    success "Commit template wired to ${DIM}${tmpl_path}${NC}"
 }
 
 # Configure push URL to Gerrit SSH so `git push` submits to review.
