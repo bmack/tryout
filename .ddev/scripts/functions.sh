@@ -367,14 +367,63 @@ configure_gerrit_push_url() {
     success "Push URL set: ${DIM}${push_url}${NC}"
 }
 
-# Test Gerrit SSH reachability. Returns 0 on success.
-verify_gerrit_ssh() {
+# Diagnose Gerrit SSH reachability + authentication.
+# Returns 0 on full success. On failure sets CS_SSH_REASON to one of:
+#   no-user       no Gerrit username configured
+#   unreachable   TCP port 29418 is not reachable
+#   no-agent-key  reachable, but ddev-ssh-agent holds no identities
+#   denied        keys were presented but Gerrit refused them
+diagnose_gerrit_ssh() {
     local user="${1:-${GERRIT_USER:-}}"
+    CS_SSH_REASON=""
     if [ -z "${user}" ]; then
+        CS_SSH_REASON="no-user"
         return 1
     fi
-    ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
-        -p "${GERRIT_SSH_PORT}" "${user}@${GERRIT_SSH_HOST}" gerrit version >/dev/null 2>&1
+
+    # 1. Raw TCP reachability to the Gerrit SSH port.
+    if ! (exec 3<>"/dev/tcp/${GERRIT_SSH_HOST}/${GERRIT_SSH_PORT}") 2>/dev/null; then
+        CS_SSH_REASON="unreachable"
+        return 1
+    fi
+    exec 3<&- 3>&- 2>/dev/null || true
+
+    # 2. ssh-agent must hold at least one identity, otherwise auth will fail
+    #    with a misleading "permission denied" instead of a clear hint.
+    if ! ssh-add -l >/dev/null 2>&1; then
+        CS_SSH_REASON="no-agent-key"
+        return 1
+    fi
+
+    # 3. Full auth probe.
+    if ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+           -p "${GERRIT_SSH_PORT}" "${user}@${GERRIT_SSH_HOST}" gerrit version >/dev/null 2>&1; then
+        return 0
+    fi
+    CS_SSH_REASON="denied"
+    return 1
+}
+
+# Back-compat wrapper: older callers just want a 0/non-zero answer.
+verify_gerrit_ssh() {
+    diagnose_gerrit_ssh "$@"
+}
+
+# Produce a short, dim-coloured next-step hint for the current CS_SSH_REASON.
+# Used by both the setup flow and the doctor report.
+gerrit_ssh_hint() {
+    case "${CS_SSH_REASON:-}" in
+        no-user)
+            echo "→ set a username: ddev cs setup <gerrit-user>" ;;
+        unreachable)
+            echo "→ check firewall/VPN for ${GERRIT_SSH_HOST}:${GERRIT_SSH_PORT}" ;;
+        no-agent-key)
+            echo "→ run on host: ddev auth ssh   (loads your SSH key into ddev-ssh-agent)" ;;
+        denied)
+            echo "→ upload your public key at https://review.typo3.org/settings/#SSHKeys" ;;
+        *)
+            echo "" ;;
+    esac
 }
 
 # Report the current state of contribution setup.
