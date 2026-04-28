@@ -47,11 +47,11 @@ cmd_cs_setup() {
 
     # Optional SSH probe — informational only
     info "Probing Gerrit SSH (${GERRIT_USER}@${GERRIT_SSH_HOST}:${GERRIT_SSH_PORT})..."
-    if verify_gerrit_ssh "${GERRIT_USER}"; then
+    if diagnose_gerrit_ssh "${GERRIT_USER}"; then
         success "SSH reachable — you can push to Gerrit"
     else
-        warn "SSH probe failed — upload your public key at:"
-        echo -e "       ${DIM}https://review.typo3.org/settings/#SSHKeys${NC}"
+        warn "SSH probe failed (${CS_SSH_REASON})"
+        echo -e "       ${DIM}$(gerrit_ssh_hint)${NC}"
     fi
 
     echo ""
@@ -116,11 +116,20 @@ cmd_cs_doctor() {
 
     # Live SSH check (only if we have a user)
     if [ -n "${CS_USER}" ]; then
-        if verify_gerrit_ssh "${CS_USER}"; then
-            echo -e "  Gerrit SSH:      ${OK} reachable"
+        if diagnose_gerrit_ssh "${CS_USER}"; then
+            echo -e "  Gerrit SSH:      ${OK} reachable (authenticated)"
         else
-            echo -e "  Gerrit SSH:      ${FAIL} unreachable"
-            echo -e "                   ${DIM}→ https://review.typo3.org/settings/#SSHKeys${NC}"
+            case "${CS_SSH_REASON}" in
+                unreachable)
+                    echo -e "  Gerrit SSH:      ${FAIL} network unreachable" ;;
+                no-agent-key)
+                    echo -e "  Gerrit SSH:      ${WARN} no key in ddev-ssh-agent" ;;
+                denied)
+                    echo -e "  Gerrit SSH:      ${FAIL} auth denied by Gerrit" ;;
+                *)
+                    echo -e "  Gerrit SSH:      ${FAIL} probe failed (${CS_SSH_REASON})" ;;
+            esac
+            echo -e "                   ${DIM}$(gerrit_ssh_hint)${NC}"
         fi
     fi
 
