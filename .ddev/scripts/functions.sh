@@ -369,9 +369,13 @@ configure_gerrit_push_url() {
 # Diagnose Gerrit SSH reachability + authentication.
 # Returns 0 on full success. On failure sets CS_SSH_REASON to one of:
 #   no-user       no Gerrit username configured
-#   unreachable   TCP port 29418 is not reachable
-#   no-agent-key  reachable, but ddev-ssh-agent holds no identities
+#   unreachable   host or SSH port cannot be reached
+#   no-agent-key  reachable, but no usable identity was offered
 #   denied        keys were presented but Gerrit refused them
+#
+# A single verbose ssh invocation doubles as the reachability probe: its
+# output distinguishes a transport failure from an authentication failure,
+# which keeps this portable to any host that can run ssh at all.
 diagnose_gerrit_ssh() {
     local user="${1:-${GERRIT_USER:-}}"
     CS_SSH_REASON=""
@@ -380,26 +384,29 @@ diagnose_gerrit_ssh() {
         return 1
     fi
 
-    # 1. Raw TCP reachability to the Gerrit SSH port.
-    if ! (exec 3<>"/dev/tcp/${GERRIT_SSH_HOST}/${GERRIT_SSH_PORT}") 2>/dev/null; then
-        CS_SSH_REASON="unreachable"
-        return 1
-    fi
-    exec 3<&- 3>&- 2>/dev/null || true
-
-    # 2. ssh-agent must hold at least one identity, otherwise auth will fail
-    #    with a misleading "permission denied" instead of a clear hint.
-    if ! ssh-add -l >/dev/null 2>&1; then
-        CS_SSH_REASON="no-agent-key"
-        return 1
-    fi
-
-    # 3. Full auth probe.
-    if ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
-           -p "${GERRIT_SSH_PORT}" "${user}@${GERRIT_SSH_HOST}" gerrit version >/dev/null 2>&1; then
+    local output
+    if output=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+                    -v -p "${GERRIT_SSH_PORT}" "${user}@${GERRIT_SSH_HOST}" gerrit version 2>&1); then
         return 0
     fi
-    CS_SSH_REASON="denied"
+
+    case "${output}" in
+        *"Could not resolve hostname"*|*"Name or service not known"*|\
+        *"Connection refused"*|*"Connection timed out"*|*"Operation timed out"*|\
+        *"Network is unreachable"*|*"No route to host"*|*"Connection closed by"*|\
+        *"Connection reset by"*|*"Host is down"*|*"Connection timeout"*)
+            CS_SSH_REASON="unreachable" ;;
+        *"Bad configuration option"*|*"command-line line 0"*)
+            # ssh too old for one of the options above — report honestly
+            # instead of blaming the network.
+            CS_SSH_REASON="unsupported-ssh" ;;
+        *"Offering public key"*)
+            # Keys were presented and Gerrit still refused them.
+            CS_SSH_REASON="denied" ;;
+        *)
+            # Transport came up but ssh had no identity to offer.
+            CS_SSH_REASON="no-agent-key" ;;
+    esac
     return 1
 }
 
@@ -417,7 +424,7 @@ gerrit_ssh_hint() {
         unreachable)
             echo "→ check firewall/VPN for ${GERRIT_SSH_HOST}:${GERRIT_SSH_PORT}" ;;
         no-agent-key)
-            echo "→ load your key into your host SSH agent, e.g.: ssh-add ~/.ssh/id_ed25519" ;;
+            echo "→ no key offered: add one to ~/.ssh/ or your agent, e.g.: ssh-add ~/.ssh/id_ed25519" ;;
         denied)
             echo "→ upload your public key at https://review.typo3.org/settings/#SSHKeys" ;;
         *)

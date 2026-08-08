@@ -123,7 +123,7 @@ cmd_cs_doctor() {
                 unreachable)
                     echo -e "  Gerrit SSH:      ${FAIL} network unreachable" ;;
                 no-agent-key)
-                    echo -e "  Gerrit SSH:      ${WARN} no key in ddev-ssh-agent" ;;
+                    echo -e "  Gerrit SSH:      ${WARN} no SSH key offered" ;;
                 denied)
                     echo -e "  Gerrit SSH:      ${FAIL} auth denied by Gerrit" ;;
                 *)
