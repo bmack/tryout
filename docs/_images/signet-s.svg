@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="soul-ref" viewBox="0 0 16 16" role="img" aria-label="TYPO3 Tryout">
+  <title>TYPO3 Tryout</title>
+  <!-- Every colour sits on its own shape, as a var() with a hex fallback: a
+       page that declares the tokens gets its own ink, and this file still
+       renders on its own. Nothing colours it from a <style> or from the root,
+       and no comment in here may carry a double dash, which is what makes an
+       SVG malformed and a reference to it draw nothing. See
+       docs/design-system/artwork.rst. -->
+  <!-- S - drawn at 16, where one unit is one pixel, and for the favicon.
+       Stroke 1, rounding 0.5, gap 1.
+
+       The triangle keeps its inked height and gives up reach: its point stops
+       a stroke short of the marker, which is the only clearance the frame has
+       left at this size. -->
+  <path stroke="var(--text-primary, #8A8378)" d="M15.5 10V12A1.5 1.5 0 0 1 14 13.5H2A1.5 1.5 0 0 1 0.5 12V4A1.5 1.5 0 0 1 2 2.5H9" fill="none" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"></path>
+  <path d="M4.5 5.5L4.5 10.5L9.5 8Z" fill="var(--accent, #FF8700)" stroke="var(--accent, #FF8700)" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"></path>
+  <path d="M11.5 2.5H14A1.5 1.5 0 0 1 15.5 4V7Z" fill="var(--accent, #FF8700)" stroke="var(--accent, #FF8700)" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"></path>
+</svg>

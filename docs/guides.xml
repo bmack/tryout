@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+    The documentation for TYPO3 tryout, as it is published.
+
+    `links_are_relative` because the site is served from a root locally and
+    from a repository path on GitHub Pages, and absolute links only work at
+    one of them.
+
+    `default_code_language` is `text`: most blocks in this manual are shell
+    sessions and directory trees, and a block that says nothing about itself
+    should be escaped rather than guessed at.
+-->
+<guides xmlns="https://www.phpdoc.org/guides"
+        input-format="rst"
+        links_are_relative="true"
+        theme="soul"
+        default_code_language="text">
+    <!-- No version: the project declares none, and a number invented here
+         would be a fact the repository cannot back up. -->
+    <project title="TYPO3 tryout" copyright="© 2026 Benni Mack"/>
+    <extension class="TYPO3\Soul\GuidesTheme\DependencyInjection\SoulExtension">
+        <!-- The tryout signet, taken from the design system's own asset set.
+             The bar draws its mark at 24, so <signet> is the 24 drawing; the
+             optical sizes are separate files and are named per slot, because
+             a 24 mark squeezed into 16 is not the 16 mark. -->
+        <signet>_images/signet.svg</signet>
+        <favicon href="_images/signet-s.svg" sizes="16x16"/>
+        <favicon href="_images/signet-l.svg" sizes="32x32"/>
+        <brand>TYPO3</brand>
+        <product>tryout</product>
+        <!-- The sections of the manual and nothing else. The source lives in
+             the footer: a repository link in the bar competes with the pages
+             for the one place a reader looks to find their way around. -->
+        <navigation>
+            <link href="/getting-started/index" label="Getting started"/>
+            <link href="/core/index" label="Core"/>
+            <link href="/reference/index" label="Reference"/>
+            <link href="/troubleshooting" label="Troubleshooting"/>
+        </navigation>
+        <!-- The footer columns are the toctree itself; only what the tree
+             cannot know is configured here. -->
+        <footer>
+            <group title="TYPO3">
+                <link href="https://review.typo3.org" label="Gerrit review" external="true"/>
+                <link href="https://docs.typo3.org/m/typo3/guide-contributionworkflow/main/en-us/" label="Contribution workflow" external="true"/>
+                <link href="https://ddev.readthedocs.io/en/stable/" label="DDEV documentation" external="true"/>
+            </group>
+            <social href="https://github.com/bmack/tryout" label="GitHub"/>
+            <note>A DDEV-based scaffold for working on TYPO3 Core and on extensions built against it.</note>
+        </footer>
+    </extension>
+</guides>

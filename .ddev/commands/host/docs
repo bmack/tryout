@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+
+## Description: Render the project documentation with the Soul guides theme
+## Usage: docs [build|update|clean|help]
+## Example: "ddev docs\nddev docs update\nddev docs clean"
+
+set -euo pipefail
+
+source "${DDEV_APPROOT}/.ddev/scripts/functions.sh"
+
+# The renderer is a throwaway Composer project outside the documents, exactly
+# as the theme's own quickstart describes. Both it and the rendered site are
+# dot-directories: generated, gitignored, never edited by hand.
+RENDERER_DIR="${PROJECT_ROOT}/.renderer"
+DOCS_DIR="${PROJECT_ROOT}/docs"
+OUTPUT_REL=".site"
+OUTPUT_DIR="${PROJECT_ROOT}/${OUTPUT_REL}"
+# Nothing is written into public/ — that docroot belongs to TYPO3. The site is
+# served from here through the Alias in .ddev/apache/docs.conf.
+THEME="typo3/soul-guides-theme"
+THEME_CONSTRAINT="dev-main"
+# Named explicitly so the throwaway manifest does not inherit whoever happens
+# to be configured in the container's git identity.
+DOCS_AUTHOR_NAME="Benni Mack"
+DOCS_AUTHOR_EMAIL="benni@typo3.org"
+
+ACTION="${1:-build}"
+shift || true
+
+require_container() {
+    if ! ddev exec true >/dev/null 2>&1; then
+        error "The DDEV project is not running."
+        error "  → Run: ddev start"
+        exit 1
+    fi
+}
+
+require_docs() {
+    if [ ! -f "${DOCS_DIR}/guides.xml" ]; then
+        error "No documentation found at docs/guides.xml"
+        exit 1
+    fi
+}
+
+# Install the renderer on first use. PHP, Composer and Node all come from the
+# web container, so nothing is required on the host but DDEV itself.
+ensure_renderer() {
+    if [ -x "${RENDERER_DIR}/vendor/bin/guides" ]; then
+        return
+    fi
+
+    info "Installing the documentation renderer into .renderer/ ..."
+    mkdir -p "${RENDERER_DIR}"
+    # Written here rather than through `composer init`: the author line
+    # contains angle brackets, and `ddev exec` hands its arguments to a shell
+    # in the container, where those are redirections.
+    if [ ! -f "${RENDERER_DIR}/composer.json" ]; then
+        cat > "${RENDERER_DIR}/composer.json" <<EOF
+{
+    "name": "typo3/tryout-documentation",
+    "description": "Throwaway renderer for the tryout documentation",
+    "authors": [
+        {
+            "name": "${DOCS_AUTHOR_NAME}",
+            "email": "${DOCS_AUTHOR_EMAIL}"
+        }
+    ],
+    "require": {}
+}
+EOF
+    fi
+    ddev exec composer --working-dir=.renderer require \
+        --no-interaction --no-progress "${THEME}:${THEME_CONSTRAINT}"
+    success "Renderer installed"
+}
+
+# The renderer creates its output directory 0700. Apache in the web container
+# runs as the mapped host user and would get through, but a mode that depends
+# on which user the server happens to run as is a 403 waiting for somebody
+# else's machine. Readable is what a published site is.
+make_readable() {
+    chmod -R a+rX "${OUTPUT_DIR}"
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# build — Render the documents
+# ─────────────────────────────────────────────────────────────────────
+cmd_build() {
+    require_container
+    require_docs
+    ensure_renderer
+
+    info "[1/2] Rendering documents..."
+    rm -rf "${OUTPUT_DIR}"
+
+    # --fail-on-error catches a render that cannot finish, but a reference
+    # that does not resolve is only a warning and still exits 0 — which is a
+    # broken link published quietly. The output is read instead.
+    local log
+    log="$(mktemp)"
+    if ! ddev exec .renderer/vendor/bin/guides docs \
+            --output="${OUTPUT_REL}" -c docs --fail-on-error 2>&1 | tee "${log}"; then
+        rm -f "${log}"
+        error "Rendering failed"
+        exit 1
+    fi
+    if grep -q 'app\.WARNING' "${log}"; then
+        echo ""
+        error "The renderer reported warnings. Each one is a link that will be"
+        error "dead on the published site:"
+        grep -o 'app\.WARNING:.*' "${log}" | sed 's/^/    /'
+        rm -f "${log}"
+        exit 1
+    fi
+    rm -f "${log}"
+
+    info "[2/2] Finishing the site..."
+    # Copies the frontend drop-in, pre-renders every custom element so the
+    # pages read without JavaScript, and writes the search index.
+    if ! ddev exec node \
+            ".renderer/vendor/${THEME}/resources/dist/soul-finish.js" "${OUTPUT_REL}"; then
+        error "Finishing step failed"
+        exit 1
+    fi
+
+    make_readable
+
+    echo ""
+    success "Documentation rendered"
+    echo -e "  ${BOLD}URL:${NC}    ${DDEV_PRIMARY_URL}/_docs/"
+    echo -e "  ${BOLD}Output:${NC} ${DIM}${OUTPUT_REL}/${NC}"
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# update — Pull a newer theme release
+# ─────────────────────────────────────────────────────────────────────
+cmd_update() {
+    require_container
+    ensure_renderer
+    info "Updating the renderer..."
+    ddev exec composer --working-dir=.renderer update --no-interaction --no-progress
+    success "Renderer updated — run: ddev docs"
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# clean — Remove the rendered site and the renderer
+# ─────────────────────────────────────────────────────────────────────
+cmd_clean() {
+    rm -rf "${OUTPUT_DIR}" "${RENDERER_DIR}"
+    success "Removed ${OUTPUT_REL}/ and .renderer/"
+}
+
+cmd_help() {
+    echo ""
+    echo -e "${BOLD}ddev docs${NC} — render the documentation"
+    echo ""
+    echo "Commands:"
+    echo -e "  ${BOLD}build${NC}     Render docs/ into ${OUTPUT_REL}/ (default)"
+    echo -e "  ${BOLD}update${NC}    Update the renderer and the theme"
+    echo -e "  ${BOLD}clean${NC}     Remove the rendered site and the renderer"
+    echo -e "  ${BOLD}help${NC}      Show this help"
+    echo ""
+    echo "The web server maps /_docs/ to ${OUTPUT_REL}/ — see .ddev/apache/docs.conf."
+    echo "Nothing is written into public/."
+    echo "  ${DDEV_PRIMARY_URL}/_docs/"
+    echo ""
+}
+
+case "${ACTION}" in
+    build)          cmd_build ;;
+    update)         cmd_update ;;
+    clean)          cmd_clean ;;
+    help|-h|--help) cmd_help ;;
+    *)
+        error "Unknown command: ${ACTION}"
+        cmd_help
+        exit 1
+        ;;
+esac

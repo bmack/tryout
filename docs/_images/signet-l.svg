@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="soul-ref" viewBox="0 0 32 32" role="img" aria-label="TYPO3 Tryout">
+  <title>TYPO3 Tryout</title>
+  <!-- Every colour sits on its own shape, as a var() with a hex fallback: a
+       page that declares the tokens gets its own ink, and this file still
+       renders on its own. Nothing colours it from a <style> or from the root,
+       and no comment in here may carry a double dash, which is what makes an
+       SVG malformed and a reference to it draw nothing. See
+       docs/design-system/artwork.rst. -->
+  <!-- L - drawn at 32, where one unit is one pixel. Stroke 2, rounding 1,
+       gap 2. Frame and marker are the family's, unchanged; only the interior
+       is this product's own.
+
+       The triangle is drawn the way the marker is - filled AND stroked at the
+       same weight with a round join, so its three points carry the same
+       rounding as every other corner in the system. Its base is the one edge
+       a screen can hold, so the base is what sits on the grid; the two
+       diagonals never land on a pixel at any size and are not asked to. -->
+  <path stroke="var(--text-primary, #8A8378)" d="M31 20V24A3 3 0 0 1 28 27H4A3 3 0 0 1 1 24V8A3 3 0 0 1 4 5H19" fill="none" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
+  <path d="M10 11L10 21L19 16Z" fill="var(--accent, #FF8700)" stroke="var(--accent, #FF8700)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
+  <path d="M23 5H28A3 3 0 0 1 31 8V16Z" fill="var(--accent, #FF8700)" stroke="var(--accent, #FF8700)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
+</svg>
