@@ -1,0 +1,57 @@
+#ddev-generated
+# Provided by the tryout DDEV add-on. Remove the line above to own this file.
+
+# This file ignores itself, so dropping the add-on into an existing checkout
+# leaves `git status` clean.
+.gitignore
+
+# TYPO3 Core clone and its worktrees (managed by ddev tryout download/worktree).
+# Two entries for typo3-core: with a trailing slash for the directory, without
+# for the symlink that `ddev tryout worktree` creates — git treats a symlink as
+# a file, so the slash form alone would leave it untracked-but-visible.
+/typo3-core/
+/typo3-core
+/typo3-core-*/
+
+# Served worktree sites and their generated config (ddev tryout worktree serve)
+/sites/
+/.ddev/config.worktrees.yaml
+/.ddev/apache/tryout-site-*.conf
+/.ddev/nginx_full/tryout-site-*.conf
+
+# The tryout Composer overlay is add-on-owned and regenerated from Core sysexts.
+/composer.tryout.json
+/composer.tryout.lock
+
+# Composer artifacts
+/vendor/
+/public/
+/var/
+
+# TYPO3 generated config
+/config/sites/
+/config/system/settings.php
+/config/system/additional.php
+
+# DDEV local overrides (for worktrees / personal settings)
+/.ddev/config.local.yaml
+/.ddev/.webimageBuild/
+/.ddev/.homeadditions/
+/.ddev/db_snapshots/
+/.ddev/.ddev-docker-compose-full.yaml
+
+# Composer auth (may contain tokens)
+/auth.json
+
+# Custom extensions are user-managed
+/packages/*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,27 @@
+#ddev-generated
+## Provided by the tryout add-on: https://github.com/bmack/tryout
+## Remove the line above if you want to own and edit this file yourself.
+##
+## Project-level settings (name, type, docroot, php_version, database) are
+## deliberately NOT set here — they belong in your own .ddev/config.yaml,
+## created by `ddev config`.
+
+web_environment:
+  - TYPO3_CONTEXT=Development
+  - TYPO3_DB_HOST=db
+  - TYPO3_DB_PORT=3306
+  - TYPO3_DB_DBNAME=db
+  - TYPO3_DB_USERNAME=db
+  - TYPO3_DB_PASSWORD=db
+  - TYPO3_SETUP_ADMIN_USERNAME=admin
+  - TYPO3_SETUP_ADMIN_PASSWORD=Password.1
+  - TYPO3_SETUP_ADMIN_EMAIL=admin@example.com
+  # Composer runs against the tryout overlay, never your own composer.json.
+  # See .ddev/tryout/composer.tryout.json.
+  - COMPOSER=composer.tryout.json
+
+hooks:
+  post-start:
+    # Runs inside the web container: the clone, the patches, composer and the
+    # TYPO3 setup all use the container's own tools.
+    - exec: bash .ddev/tryout/post-start.sh

@@ -1,0 +1,45 @@
+#ddev-generated
+# The tryout command panel, as a herdr plugin.
+#
+# Registered once per machine with `herdr plugin link <this dir>`; the panel and the
+# popup both resolve the DDEV project from the pane's own directory, so one
+# registration serves every tryout project.
+#
+# Both entries point at .ddev/tryout/, not at this repository: the payload is copied
+# into a consuming project by `ddev add-on get`, and that installed copy is what runs.
+# Paths here are relative to the plugin directory, which is the project root.
+
+id = "ddev-tryout"
+name = "ddev tryout"
+version = "1.0.0"
+min_herdr_version = "0.8.0"
+description = "Run ddev tryout commands from a docked panel."
+platforms = ["linux", "macos"]
+
+# The panel itself. `placement = "split"` because a docked pane is a normal herdr
+# pane; the narrow width comes from the --ratio that `ddev tryout panel` passes when
+# it splits, which the manifest cannot express.
+[[panes]]
+id = "panel"
+title = "tryout"
+placement = "split"
+command = ["bash", ".ddev/tryout/herdr-panel.sh"]
+
+# One command, prompted for and run — however long it takes, so nothing is left
+# behind in the layout. Session-modal, so it can own the screen while gum asks;
+# the verb arrives as TRYOUT_PANEL_VERB because a pane takes no arguments.
+# Not every row comes here: one that is fast, silent and needs no terminal runs
+# in the panel itself, where a modal box would only be in the way.
+[[panes]]
+id = "run"
+title = "tryout"
+placement = "popup"
+width = "70%"
+height = "60%"
+command = ["bash", ".ddev/tryout/herdr-panel-run.sh"]
+
+[[actions]]
+id = "open-panel"
+title = "Toggle the tryout panel"
+description = "Dock a panel listing ddev tryout commands, or focus it if it is open."
+command = ["bash", ".ddev/tryout/herdr-panel-open.sh"]

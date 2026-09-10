@@ -1,0 +1,1106 @@
+#!/usr/bin/env bash
+#ddev-silent-no-warn
+#ddev-generated
+
+## Description: TYPO3 development toolkit — manage Core, patches, and extensions
+## Usage: tryout [command] [args]
+## Example: "ddev tryout status\nddev tryout download\nddev tryout patch 56947\nddev tryout reset\nddev tryout delete"
+# NO ## AutocompleteTerms: header on purpose. It sets cobra's ValidArgs, which
+# then rejects any second argument during completion — so ValidArgsFunction,
+# i.e. commands/host/autocomplete/tryout, is never called and
+# `ddev tryout cs <TAB>` completes nothing. The two are mutually exclusive;
+# the script supersedes the flat list. See tests/unit.bats.
+
+set -euo pipefail
+
+
+source "${DDEV_APPROOT}/.ddev/tryout/functions.sh"
+
+ACTION="${1:-help}"
+shift || true
+
+# ─────────────────────────────────────────────────────────────────────
+# Host / container split
+#
+# This script runs on the HOST and owns the terminal: prompts, gum, herdr, the
+# confirmation before `delete`. The work of every other verb runs INSIDE the web
+# container, where git, composer, php, curl and the database clients are the
+# container's own — one `ddev exec` per command, into tryout-container.sh, which
+# sources tryout/commands.sh. Arguments are resolved here first, so nothing in
+# there ever has to ask.
+# ─────────────────────────────────────────────────────────────────────
+
+# Run one verb in the web container. Settings a user exports on the host reach
+# the container only if they are handed over: DDEV forwards nothing.
+#
+# When the verb comes back the host is brought up to date: with Mutagen a
+# worktree the container just checked out is not on the host for a few seconds
+# more, and `ddev tryout worktree add x && cd typo3-core-x` must not race that.
+# The two verbs that change nothing skip the flush.
+delegate() {
+    local envs=() rc=0
+    [ -n "${TRYOUT_BRANCH:-}" ]      && envs+=("TRYOUT_BRANCH=${TRYOUT_BRANCH}")
+    [ -n "${TRYOUT_GERRIT_USER:-}" ] && envs+=("TRYOUT_GERRIT_USER=${TRYOUT_GERRIT_USER}")
+    [ -n "${TRYOUT_PATCHES:-}" ]     && envs+=("TRYOUT_PATCHES=${TRYOUT_PATCHES}")
+    # ${envs[@]+…}: an empty array is "unbound" to bash 3.2 under set -u.
+    ddev exec env ${envs[@]+"${envs[@]}"} bash /var/www/html/.ddev/tryout/tryout-container.sh "$@" || rc=$?
+    case "${1:-} ${2:-}" in
+        "status "*|"exec "*|"composer "*|"worktree list"*|"cs doctor"*) ;;
+        *) flush_mutagen ;;
+    esac
+    return "${rc}"
+}
+
+# Wait for Mutagen to bring what the container wrote over to the host. Quiet: it
+# takes a moment at most, and a line after every command would be noise. A no-op
+# when Mutagen is off.
+flush_mutagen() {
+    [ "${DDEV_MUTAGEN_ENABLED:-false}" = "true" ] || return 0
+    ddev mutagen sync >/dev/null 2>&1 || true
+}
+
+# Restart the project when serving or unserving changed the set of hostnames.
+#
+# DDEV owns three things keyed on additional_hostnames: the Traefik routing rule,
+# $VIRTUAL_HOST, and the mkcert certificate SANs. None can be refreshed from
+# inside the container, so a hostname that has just appeared or gone needs a
+# restart before its URL works at all. When the set is UNCHANGED — re-serving a
+# site, a --php change — serve_worktree has already reloaded the webserver in
+# place, and a restart would cost minutes for nothing.
+#
+# Runs on the HOST: `ddev` is only a stub inside the web image, and a unit test
+# greps the container-side files for it.
+#
+# Takes the hostname set from BEFORE the command; compares against the set now.
+restart_if_hosts_changed() {
+    local before="$1" after
+    after="$(served_hostname_set)"
+    [ "${before}" != "${after}" ] || return 0
+
+    if [ "${TRYOUT_NO_RESTART:-}" = "1" ]; then
+        warn "Hostnames changed — run 'ddev restart' to apply them."
+        return 0
+    fi
+
+    info "Restarting DDEV to register the hostname and issue its certificate..."
+    if ddev restart; then
+        success "DDEV restarted."
+    else
+        error "ddev restart failed"
+        error "  → ddev restart"
+        return 1
+    fi
+}
+
+# Some commands take no arguments. Silently ignoring an extra word makes a typo
+# look like it worked — `ddev tryout composer install` regenerated the overlay and
+# said nothing about `install`.
+reject_args() {
+    local cmd="$1"; shift
+    [ $# -eq 0 ] && return 0
+    error "'${cmd}' takes no arguments, but got: $*"
+    return 1
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# status — Show project overview
+# ─────────────────────────────────────────────────────────────────────
+cmd_status() {
+    reject_args status "$@" || return 1
+    # Before anything else, and on the host: an install older than the source is
+    # why a command or its tab-completion can look broken, and the containers
+    # need not be running to say so.
+    if addon_is_stale; then
+        echo ""
+        echo -e "  ${YELLOW}!${NC} This project runs an older copy of the tryout add-on"
+        echo -e "    ${DIM}the command and its tab-completion offer the previous feature set${NC}"
+        echo -e "    ${DIM}→ ddev add-on get <path-to-tryout> && ddev restart${NC}"
+    fi
+    # Before Core exists there is nothing to ask the container about — and this
+    # answer has to work with the containers down, right after the install.
+    if [ ! -e "${CORE_GIT_DIR}" ]; then
+        echo ""
+        {
+            echo -e "  Core:      ${RED}✗${NC} not cloned"
+            echo -e "             ${DIM}→ ddev tryout download${NC}"
+        } | ui_box "TYPO3 tryout — Status"
+        echo ""
+        return 0
+    fi
+    delegate status
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# download — Clone or update TYPO3 Core
+# ─────────────────────────────────────────────────────────────────────
+cmd_download() {
+    delegate download "$@"
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# patch — Apply Gerrit patches
+# ─────────────────────────────────────────────────────────────────────
+# With a change number, apply that one. Bare and with a terminal, browse the open
+# changes for the branch in use and pick one or several — the picking happens
+# here, on the host, because that is where gum and the terminal are. Bare without
+# a terminal, the container falls back to TRYOUT_PATCHES exactly as before.
+cmd_patch() {
+    require_core
+
+    local site="" all_branches="false" args=()
+    # --site names the site without occupying the change-id slot. The panel needs
+    # it: it knows which worktree it drives but not which change you want, and
+    # positionally the id comes first — so `patch benni` would fetch a Gerrit
+    # change called "benni" and apply it to the primary.
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --all-branches) all_branches="true"; shift ;;
+            --site)         site="${2:-}"; shift 2 || shift ;;
+            --site=*)       site="${1#--site=}"; shift ;;
+            *)              args+=("$1"); shift ;;
+        esac
+    done
+    set -- ${args[@]+"${args[@]}"}
+
+    # `patch <id> <site>` keeps working: the site becomes a flag, so several
+    # change numbers can follow.
+    if [ -n "${1:-}" ]; then
+        local id="$1"; shift
+        # A --site flag wins; otherwise the old `patch <id> <site>` form still works.
+        [ -n "${site}" ] || site="${1:-}"
+        delegate patch ${site:+--site "${site}"} "${id}"
+        return $?
+    fi
+
+    [ -n "${site}" ] || site="${1:-}"
+    # A configured list is a deliberate choice: apply it rather than asking.
+    if [ -n "$(echo "${TRYOUT_PATCHES:-}" | tr -d '[:space:]')" ] || ! have_tty; then
+        delegate patch ${site:+--site "${site}"}
+        return $?
+    fi
+
+    # Which site comes first, because it decides which Core is patched — and so
+    # which branch's open changes are the right ones to show. Offering main's
+    # changes for a 13.4 site would be the wrong list, not merely a longer one.
+    if [ -z "${site}" ] && [ -n "$(served_site_names)" ]; then
+        site="$(ask_site "Patch which site?")" \
+            || { explain_missing "ddev tryout patch [<change-id>] [<site>]"; return 1; }
+    fi
+
+    # The branch to list: the project's for the primary, the site's own otherwise.
+    # A served worktree is checked out detached, so its base branch is detected the
+    # same way the container does it.
+    local branch="${BRANCH}"
+    if [ -n "${site}" ] && ! site_is_primary "${site}"; then
+        CORE_DIR="$(site_core_dir "${site}")"
+        branch="$(detect_detached_base_branch)"
+    fi
+    [ "${all_branches}" = "true" ] && branch="-"
+
+    # Fetch first, then pick. The two cannot share a pipeline: the fetch wants a
+    # spinner and the picker wants the terminal, and a spinner over an
+    # interactive chooser would fight it for the screen.
+    local rows=() picks=() p
+    while IFS= read -r p; do [ -n "${p}" ] && rows+=("${p}"); done < <(fetch_open_patches "${branch}")
+    if [ ${#rows[@]} -eq 0 ]; then
+        error "Could not reach Gerrit, or no open changes on ${branch}"
+        error "  → ddev tryout patch <change-id>   to apply one by number"
+        return 1
+    fi
+    while IFS= read -r p; do [ -n "${p}" ] && picks+=("${p}"); done \
+        < <(pick_patches "Apply which changes?" "${rows[@]}")
+    if [ ${#picks[@]} -eq 0 ]; then
+        explain_missing "ddev tryout patch <change-id> [<site>]"
+        return 1
+    fi
+
+    # "@primary" is the host's sentinel for the default; the container's parser
+    # takes --site as a served site's name.
+    site_is_primary "${site}" && site=""
+
+    local rc=0
+    delegate patch ${site:+--site "${site}"} "${picks[@]}" || rc=$?
+    [ "${rc}" -eq 0 ] || return "${rc}"
+
+    # Applying is per-checkout; the patch list is what makes it survive a reset
+    # or a fresh start. Offer once, and only when something was actually applied.
+    # Name each change rather than listing bare numbers: what is about to be
+    # written to a config file should be readable without looking anything up.
+    echo ""
+    echo "  Add to your patch list, so they reapply on every ddev start:"
+    describe_patches "${picks[*]}" "${rows[@]}" | sed 's/^/    /'
+    echo ""
+    # Nothing is destroyed either way: a decline and no terminal both mean "skip".
+    if ui_confirm "Add them?"; then
+        persist_patches "${picks[@]}"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# reset — Reset Core to latest main and rebuild
+# ─────────────────────────────────────────────────────────────────────
+cmd_reset() {
+    require_core
+    local site="${1:-}"
+    # Bare with several sites served, ask which one — a reset rebuilds a whole
+    # site, so guessing the primary is not obviously right any more.
+    if [ -z "${site}" ] && [ -n "$(served_site_names)" ]; then
+        site="$(ask_site "Reset which site?")" \
+            || { explain_missing "ddev tryout reset [<site>]"; have_tty && return 1; }
+    fi
+    delegate reset ${site:+"${site}"}
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# delete — Wipe database and fileadmin, fresh TYPO3 setup
+# ─────────────────────────────────────────────────────────────────────
+cmd_delete() {
+    local target="" sites=() assume_yes="false" a
+    # --yes lets a caller that has already confirmed (the herdr menu) skip the
+    # prompt, which would otherwise appear in a pane the user is not looking at.
+    for a in "$@"; do
+        case "${a}" in
+            --yes|-y) assume_yes="true" ;;
+            *)        [ -z "${target}" ] && target="${a}" ;;
+        esac
+    done
+
+    # Bare with sites served, ask rather than assume: this destroys data, and the
+    # primary is only one of several candidates. "--all" rides along in the list
+    # so wiping everything is a pick rather than a flag to remember.
+    if [ -z "${target}" ] && [ -n "$(served_site_names)" ]; then
+        target="$(ask_site "Wipe which site?" "--all         every site, primary included")" \
+            || { explain_missing "ddev tryout delete [<site>|--all]"; have_tty && return 1; }
+        case "${target}" in --all*) target="--all" ;; esac
+    fi
+
+    # Resolve which site(s) to wipe. Defaulting to the primary keeps existing
+    # muscle memory, but with sites served we must name what gets destroyed —
+    # silently dropping `db` while orphaning db_<name> is the trap here.
+    if [ "${target}" = "--all" ]; then
+        sites=("${PRIMARY_SITE}")
+        local s
+        while IFS= read -r s; do [ -n "${s}" ] && sites+=("${s}"); done < <(served_site_names)
+    elif [ -n "${target}" ] && ! site_is_primary "${target}"; then
+        if ! site_is_served "${target}"; then
+            error "No served site '${target}'"
+            error "  → ddev tryout worktree list"
+            return 1
+        fi
+        sites=("${target}")
+    else
+        sites=("${PRIMARY_SITE}")
+    fi
+
+    # Asked here, where the terminal is; the container only sees a confirmed
+    # request. The warning stays outside the prompt — it names every database and
+    # fileadmin about to go, and a confirm renders one line.
+    if [ "${assume_yes}" != "true" ]; then
+        delete_warning "${target}" "${sites[@]}"
+        local rc=0
+        ui_confirm "Are you sure?" || rc=$?
+        case "${rc}" in
+            1) info "Aborted."; return ;;
+            2) error "Refusing to wipe without confirmation — nothing to ask on."
+               error "  → ddev tryout delete${target:+ ${target}} --yes"
+               return 1 ;;
+        esac
+    fi
+
+    # The primary is the container's default, and its sentinel is not a word the
+    # container-side argument parser takes.
+    site_is_primary "${target}" && target=""
+    delegate delete ${target:+"${target}"} --yes
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# checkout — Switch TYPO3 Core branch (version)
+# ─────────────────────────────────────────────────────────────────────
+cmd_checkout() {
+    # --site pins the site while leaving the branch to be asked for. The panel
+    # needs that: it knows which worktree it drives, but not which branch you
+    # want, and positionally the branch has to come first.
+    local args=() site=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --site)   site="${2:-}"; shift 2 || shift ;;
+            --site=*) site="${1#--site=}"; shift ;;
+            *)        args+=("$1"); shift ;;
+        esac
+    done
+    set -- ${args[@]+"${args[@]}"}
+
+    local target_branch="${1:-}"
+    [ -n "${site}" ] || site="${2:-}"
+    require_core
+
+    # No branch: ask, if someone is there to answer.
+    if [ -z "${target_branch}" ]; then
+        target_branch="$(ask_branch "Switch Core to which branch?")" || { explain_missing "ddev tryout checkout <branch>"; have_tty && return 1; }
+    fi
+    if [ -z "${target_branch}" ]; then
+        error "Usage: ddev tryout checkout <branch>"
+        echo ""
+        echo "Examples:"
+        echo "  ddev tryout checkout main     # latest development (v14)"
+        echo "  ddev tryout checkout 13.4     # v13 LTS"
+        echo "  ddev tryout checkout 12.4     # v12 LTS"
+        echo ""
+        echo "Branches known locally:"
+        list_local_core_branches | sed 's/^/  /'
+        return 1
+    fi
+
+    delegate checkout "${target_branch}" ${site:+"${site}"}
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# composer — Regenerate composer.json from available system extensions
+# ─────────────────────────────────────────────────────────────────────
+cmd_composer() {
+    if [ $# -gt 0 ]; then
+        error "'composer' takes no arguments, but got: $*"
+        error "  It regenerates composer.tryout.json from the Core sysexts."
+        error "  → ddev composer $*   (to run Composer itself)"
+        return 1
+    fi
+    require_core
+    delegate composer
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# exec — Run a command in a site's context (its PHP, root and database)
+# ─────────────────────────────────────────────────────────────────────
+cmd_exec() {
+    local site="${1:-}"
+    shift || true
+    # Guided: pick the site, then type the command. site_exec runs it through
+    # that site's php, so "vendor/bin/typo3 cache:flush" is the shape to type.
+    if [ -z "${site}" ]; then
+        site="$(ask_site "Run in which site?")" || { explain_missing "ddev tryout exec <site> <command> ..."; have_tty && return 1; }
+    fi
+    if [ -n "${site}" ] && [ $# -eq 0 ] && have_tty; then
+        local typed=""
+        typed="$(ask_text "Command to run in ${site} (after php)" "vendor/bin/typo3 cache:flush")" || { explain_missing "ddev tryout exec <site> <command> ..."; return 1; }
+        # shellcheck disable=SC2086 # a typed command line is meant to be word-split
+        set -- ${typed}
+    fi
+    if [ -z "${site}" ] || [ $# -eq 0 ]; then
+        error "Usage: ddev tryout exec <site> <command> ..."
+        echo ""
+        echo "  Examples:"
+        echo "    ddev tryout exec v13 vendor/bin/typo3 cache:flush"
+        echo "    ddev tryout exec v13 composer show typo3/cms-core"
+        echo ""
+        echo "  Sites: primary$(served_site_names | sed 's/^/, /' | tr -d '\n')"
+        return 1
+    fi
+    if ! site_is_primary "${site}" && ! site_is_served "${site}"; then
+        error "No served site '${site}'"
+        error "  → ddev tryout worktree list"
+        return 1
+    fi
+    delegate exec "${site}" "$@"
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# worktree — Manage side-by-side Core checkouts
+# ─────────────────────────────────────────────────────────────────────
+cmd_worktree() {
+    local sub="${1:-list}"
+    shift || true
+
+    case "${sub}" in
+        add)
+            require_core
+            # The name is taken IN the loop, not from $1 before it: `worktree add
+            # --herdr` (what the panel runs) otherwise made the name the literal
+            # string "--herdr", which is non-empty, so the prompt below never
+            # fired and the flag was delegated as the worktree name.
+            local name="" branch="" in_herdr="false" flags=()
+            # --herdr is answered here; everything else is the container's.
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --herdr)   in_herdr="true" ;;
+                    # --branch is the old spelling of the default; still taken so
+                    # an existing habit or script does not start erroring.
+                    --branch)  ;;
+                    --detach|--serve) flags+=("$1") ;;
+                    --no-restart) TRYOUT_NO_RESTART=1 ;;
+                    --php)     flags+=("--php=${2:-}"); shift ;;
+                    --php=*)   flags+=("$1") ;;
+                    -*)        error "Unknown option: $1"
+                               error "  → ddev tryout worktree help"
+                               return 1 ;;
+                    *)         if [ -z "${name}" ]; then name="$1"; else branch="$1"; fi ;;
+                esac
+                shift
+            done
+            # Guided: no name means ask for it.
+            if [ -z "${name}" ]; then
+                name="$(ask_text "Name for the new worktree (becomes typo3-core-<name>)" "e.g. bugfix-12345")" \
+                    || { explain_missing "ddev tryout worktree add <name> [<branch>] [--branch] [--serve] [--php 8.2] [--herdr]"; return 1; }
+            fi
+            validate_worktree_name "${name}" || return 1
+            # The branch is asked for whether or not the name came from the command
+            # line: naming a worktree is not a decision about which branch it sits
+            # on, and silently taking the current one is how you end up with a
+            # worktree based on whatever Core happened to be checked out.
+            ASKED_BRANCH="${branch}"
+            ask_new_worktree_branch "ddev tryout worktree add <name> [<branch>]" || return 1
+            branch="${ASKED_BRANCH}"
+            # --serve inside add creates a hostname just as `worktree serve` does,
+            # so it needs the same restart. Snapshot before the work; a plain add
+            # serves nothing, leaves the set alone and restarts nothing.
+            local ad_before
+            ad_before="$(served_hostname_set)"
+            delegate worktree add "${name}" ${branch:+"${branch}"} ${flags[@]+"${flags[@]}"} || return 1
+            restart_if_hosts_changed "${ad_before}" || true
+            if [ "${in_herdr}" = "true" ]; then
+                echo ""
+                ensure_herdr_session && open_worktree_in_herdr "${name}" "true" "true"
+            fi
+            ;;
+
+        list)
+            require_core
+            delegate worktree list "$@"
+            ;;
+
+        use)
+            require_core
+            local name="${1:-}"
+            shift || true
+            [ -n "${name}" ] || name="$(ask_worktree "Point the primary site at which worktree?" nonprimary)" \
+                || { explain_missing "ddev tryout worktree use <name> [--force]"; return 1; }
+            delegate worktree use "${name}" "$@"
+            ;;
+
+        remove|rm)
+            require_core
+            local name="${1:-}"
+            shift || true
+            [ -n "${name}" ] || name="$(ask_worktree "Remove which worktree?" nonprimary)" \
+                || { explain_missing "ddev tryout worktree remove <name> [--force]"; return 1; }
+            # ALWAYS ask. This deletes the checkout's directory outright, and a
+            # Core worktree is ~20k files that took minutes to check out — git's
+            # own refusal to drop a dirty tree is no longer the backstop, because
+            # the removal below deliberately takes the directory with it.
+            # --yes skips the question for a caller that has already asked (the
+            # herdr popup), which would otherwise prompt in a pane nobody watches.
+            local wt_force="false" wt_yes="false" a wt_args=()
+            for a in "$@"; do
+                case "${a}" in
+                    --force)  wt_force="true"; wt_args+=("${a}") ;;
+                    --yes|-y) wt_yes="true" ;;
+                    *)        wt_args+=("${a}") ;;
+                esac
+            done
+            if [ "${wt_yes}" != "true" ]; then
+                local what="worktree '${name}' and its directory"
+                core_worktree_is_dirty "$(core_worktree_dir "${name}")" \
+                    && what="${what}, including uncommitted changes"
+                site_is_served "${name}" && what="${what}, plus its site and database"
+                warn "$(core_worktree_dir "${name}")"
+                local rc=0
+                ui_confirm "Remove ${what}?" || rc=$?
+                case "${rc}" in
+                    1) info "Aborted."; return ;;
+                    2) error "Refusing to remove without confirmation — nothing to ask on."
+                       error "  → run it in a terminal, or pass --yes"
+                       return 1 ;;
+                esac
+            fi
+            delegate worktree remove "${name}" ${wt_args[@]+"${wt_args[@]}"}
+            ;;
+
+        serve)
+            require_core
+            local name="${1:-}"
+            shift || true
+            [ -n "${name}" ] || name="$(ask_worktree "Serve which worktree?" unserved)" \
+                || { explain_missing "ddev tryout worktree serve <name> [--php 8.2]"; return 1; }
+            # --no-restart is the HOST's, not a verb the container knows: strip it
+            # before delegating or ctr_worktree rejects it as an unknown argument.
+            local sv_args=() sv_rc=0 sv_before
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --no-restart) TRYOUT_NO_RESTART=1 ;;
+                    *)            sv_args+=("$1") ;;
+                esac
+                shift
+            done
+            # Snapshot before the work: the marker it writes is what changes the set.
+            sv_before="$(served_hostname_set)"
+            delegate worktree serve "${name}" ${sv_args[@]+"${sv_args[@]}"} || sv_rc=$?
+            [ "${sv_rc}" -eq 0 ] || return "${sv_rc}"
+            restart_if_hosts_changed "${sv_before}"
+            ;;
+
+        unserve)
+            require_core
+            local name="${1:-}"
+            shift || true
+            [ -n "${name}" ] || name="$(ask_worktree "Stop serving which worktree?" served)" \
+                || { explain_missing "ddev tryout worktree unserve <name> [--drop-db]"; return 1; }
+            local un_args=() un_rc=0 un_before
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --no-restart) TRYOUT_NO_RESTART=1 ;;
+                    *)            un_args+=("$1") ;;
+                esac
+                shift
+            done
+            un_before="$(served_hostname_set)"
+            delegate worktree unserve "${name}" ${un_args[@]+"${un_args[@]}"} || un_rc=$?
+            [ "${un_rc}" -eq 0 ] || return "${un_rc}"
+            restart_if_hosts_changed "${un_before}"
+            ;;
+
+        rename)
+            require_core
+            local old="${1:-}" new="${2:-}"
+            [ -n "${old}" ] || old="$(ask_worktree "Rename which worktree?")" \
+                || { explain_missing "ddev tryout worktree rename <old> <new>"; return 1; }
+            [ -n "${new}" ] || new="$(ask_text "New name for ${old}")" \
+                || { explain_missing "ddev tryout worktree rename <old> <new>"; return 1; }
+            if [ -z "${old}" ] || [ -z "${new}" ]; then
+                error "Usage: ddev tryout worktree rename <old> <new>"
+                error "  Renames the checkout only — the branch is untouched."
+                return 1
+            fi
+            # A served worktree's hostname is its name, so renaming one moves the
+            # set: unserve under the old name, re-serve under the new. Same restart
+            # rule as serve/unserve, and a no-op when it was not served.
+            local rn_before rn_rc=0
+            rn_before="$(served_hostname_set)"
+            delegate worktree rename "${old}" "${new}" || rn_rc=$?
+            [ "${rn_rc}" -eq 0 ] || return "${rn_rc}"
+            restart_if_hosts_changed "${rn_before}"
+            ;;
+
+        adopt)
+            # Host-side by nature: the strays live in herdr's worktree directory,
+            # a host path the container has never heard of.
+            require_core
+            local dry="false" one_path="" one_name=""
+            case "${1:-}" in
+                --dry-run) dry="true" ;;
+                "")        ;;
+                *)         one_path="$1"; one_name="${2:-}" ;;
+            esac
+
+            # Adopting a single stray by path lets the caller choose the directory
+            # name, rather than taking whatever the branch happens to be called.
+            if [ -n "${one_path}" ]; then
+                [ -d "${one_path}" ] || { error "No such worktree: ${one_path}"; return 1; }
+                local n
+                if [ -n "${one_name}" ]; then
+                    n="${one_name}"
+                else
+                    n="$(worktree_name_from_ref \
+                        "$(git -C "${one_path}" branch --show-current 2>/dev/null || basename "${one_path}")")"
+                fi
+                validate_worktree_name "${n}" || return 1
+                local t
+                t="$(core_worktree_dir "${n}")"
+                [ -e "${t}" ] && { error "'${n}' already exists"; return 1; }
+                info "Moving ${one_path} → $(basename "${t}")"
+                if git -C "${one_path}" worktree move "${one_path}" "${t}" 2>/dev/null; then
+                    ensure_relative_worktree_paths
+                    success "Adopted as '${n}'"
+                else
+                    error "Could not move ${one_path} (uncommitted changes?)"
+                    return 1
+                fi
+                return 0
+            fi
+
+            local foreign wt name target branch
+            foreign=$(list_foreign_core_worktrees)
+            if [ -z "${foreign}" ]; then
+                success "Every Core worktree is inside the project"
+                return 0
+            fi
+
+            echo ""
+            warn "Core worktrees outside the project:"
+            echo "${foreign}" | sed 's/^/    /'
+            echo ""
+            echo -e "  ${DIM}These are invisible to every ddev tryout command.${NC}"
+            echo ""
+
+            [ "${dry}" = "true" ] && return 0
+
+            # Which of them to take is a choice: herdr leaves checkouts behind
+            # that the user may still be working in. Offer them, and fall back to
+            # all of them where nobody can answer — the behaviour before this.
+            local chosen=() labels=() l
+            if have_tty; then
+                while IFS= read -r wt; do
+                    [ -n "${wt}" ] || continue
+                    branch=$(git -C "${wt}" branch --show-current 2>/dev/null || true)
+                    labels+=("$(printf '%s  %s' "$(pad_display "${wt}" 52)" "${branch:-(detached)}")")
+                done <<< "${foreign}"
+                while IFS= read -r l; do
+                    [ -n "${l}" ] && chosen+=("${l%% *}")
+                done < <(ui_choose_multi "Adopt which checkouts?" "${labels[@]}")
+                if [ ${#chosen[@]} -eq 0 ]; then
+                    warn "Nothing adopted"
+                    return 0
+                fi
+            else
+                while IFS= read -r wt; do [ -n "${wt}" ] && chosen+=("${wt}"); done <<< "${foreign}"
+            fi
+
+            for wt in "${chosen[@]}"; do
+                branch=$(git -C "${wt}" branch --show-current 2>/dev/null || true)
+                name=$(worktree_name_from_ref "${branch:-$(basename "${wt}")}")
+                if ! validate_worktree_name "${name}" >/dev/null 2>&1; then
+                    error "Cannot derive a name for ${wt}"
+                    continue
+                fi
+                target=$(core_worktree_dir "${name}")
+                if [ -e "${target}" ]; then
+                    error "'${name}' already exists — skipping ${wt}"
+                    continue
+                fi
+                info "Moving ${wt} → $(basename "${target}")"
+                if git -C "${wt}" worktree move "${wt}" "${target}" 2>/dev/null; then
+                    success "Adopted '${name}'"
+                else
+                    error "Could not move ${wt} (uncommitted changes?)"
+                fi
+            done
+            ensure_relative_worktree_paths
+            echo ""
+            ;;
+
+        help|-h|--help)
+            echo ""
+            echo -e "${BOLD}ddev tryout worktree${NC} — side-by-side Core checkouts"
+            echo ""
+            echo -e "  ${BOLD}add <name> [<branch>]${NC}   Create typo3-core-<name> on a branch <name>, off origin/<branch>"
+            echo -e "  ${BOLD}list${NC}                    List worktrees and served sites"
+            echo -e "  ${BOLD}use <name>${NC}              Point the PRIMARY site at <name>, then rebuild"
+            echo -e "  ${BOLD}serve <name>${NC}            Give <name> its own URL, PHP version and database"
+            echo -e "  ${BOLD}unserve <name>${NC}          Drop the site, keep the worktree"
+            echo -e "  ${BOLD}remove <name>${NC}           Delete a worktree and its directory (asks first)"
+            echo -e "  ${BOLD}adopt [<path> [<name>]]${NC} Move stray checkouts in (bare: pick from a list)"
+            echo -e "  ${BOLD}rename <old> <new>${NC}      Rename a checkout (the branch is untouched)"
+            echo ""
+            echo "  Flags: --detach    (add: no branch, just a checkout)"
+            echo "         --serve     (add: serve it immediately)"
+            echo "         --herdr     (add: open it as a herdr workspace)"
+            echo "         --php 8.2   (add/serve: run this site on another PHP version)"
+            echo "         --force     (use: switch despite uncommitted changes)"
+            echo "                     (remove: also drop an unmerged branch)"
+            echo "         --yes       (remove: skip the confirmation)"
+            echo "         --drop-db   (unserve: also drop the site's database)"
+            echo "         --no-restart (add --serve/serve/unserve/rename: skip the restart)"
+            echo ""
+            echo "  Two ways to run several Cores:"
+            echo "    use    — one site at the project URL, switch which Core it serves"
+            echo "    serve  — every worktree live at once on <name>.<project>.ddev.site"
+            echo ""
+            echo "  Adding or removing a served site restarts DDEV automatically, so"
+            echo "  it can register the hostname and issue its TLS certificate."
+            echo "  Re-serving one that already exists (a --php change, say) applies"
+            echo "  right away with no restart. --no-restart skips it — useful when"
+            echo "  serving several worktrees, then restarting once at the end."
+            echo ""
+            echo "  All worktrees share one git object store, so ddev tryout cs hooks and"
+            echo "  Gerrit config are set up once and apply to every one of them."
+            echo ""
+            ;;
+
+        *)
+            error "Unknown worktree command: ${sub}"
+            cmd_worktree help
+            return 1
+            ;;
+    esac
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# panel — Dock a clickable command panel in the current herdr tab
+# ─────────────────────────────────────────────────────────────────────
+cmd_panel() {
+    reject_args panel "$@" || return 1
+    herdr_available || return 1
+    # Inside herdr, and only there: the panel is a pane in the tab you are looking
+    # at, so there is nothing to dock it to from a plain shell.
+    if [ "${HERDR_ENV:-}" != "1" ]; then
+        error "The panel docks into the herdr tab you are in — run it from inside herdr."
+        error "  → ddev tryout herdr    opens your worktrees there"
+        return 1
+    fi
+    # Linking the plugin is optional and buys one thing: the popup. Without it the
+    # panel still runs every command, just in its own pane instead of a modal. Say
+    # so once, here, because nothing else would ever mention it.
+    # The plugin registry is machine-wide, so this needs no --session — and
+    # pinning it to tryout-<project> would misreport "not linked" whenever that
+    # server is not running, which here it need not be.
+    if ! herdr plugin list 2>/dev/null | grep -q 'ddev-tryout'; then
+        info "Commands will run in the panel itself."
+        echo -e "  ${DIM}For a popup that prompts instead, register the plugin once:${NC}"
+        echo -e "  ${DIM}→ herdr plugin link ${PROJECT_ROOT}${NC}"
+        echo ""
+    fi
+
+    # Which session to dock into. Pinning tryout-<project> unconditionally would be
+    # the mirror of the bug this fixes: run from a pane in the user's own session,
+    # it would search ours and find nothing. So ask whether the calling pane is one
+    # of ours, and leave it to the ambient session when it is not.
+    local session=""
+    if [ -n "${HERDR_PANE_ID:-}" ] \
+       && herdr_cli pane list 2>/dev/null \
+          | jq -e --arg p "${HERDR_PANE_ID}" \
+              '[.result.panes[]? | select(.pane_id == $p)] | length > 0' >/dev/null 2>&1; then
+        session="$(herdr_session_name)"
+    fi
+
+    # The script does the work: it is also the plugin action's entry point, so the
+    # toggle behaves the same however it was reached.
+    TRYOUT_PANEL_SESSION="${session}" bash "$(tryout_script herdr-panel-open.sh)"
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# launch — Open a site in the browser
+# ─────────────────────────────────────────────────────────────────────
+# Host-only: there is no browser in the container, and nothing here needs one.
+#
+# The worktree you are standing in is the answer whenever there is one, so
+# `ddev tryout launch` from inside a checkout takes no argument at all. From
+# anywhere else it asks, listing each served site with the URL it opens.
+cmd_launch() {
+    local site="" backend="false" a
+    for a in "$@"; do
+        case "${a}" in
+            --backend|-b) backend="true" ;;
+            -h|--help)    cmd_launch_help; return 0 ;;
+            -*)           error "Unknown option: ${a}"; cmd_launch_help; return 1 ;;
+            *)            site="${a}" ;;
+        esac
+    done
+
+    # Standing in a worktree answers the question. Only when it is actually
+    # served, though — an unserved checkout has no URL, and silently opening a
+    # different site's would be worse than saying so.
+    if [ -z "${site}" ]; then
+        local here
+        if here="$(worktree_name_for_path "${PWD}" 2>/dev/null)" && [ -n "${here}" ]; then
+            # The active worktree is the primary, and the primary is always served.
+            if [ "${here}" = "$(active_worktree_name 2>/dev/null)" ] || site_is_served "${here}"; then
+                site="${here}"
+            else
+                error "Worktree '${here}' is not served — it has no URL"
+                error "  → ddev tryout worktree serve ${here}"
+                error "  → or: ddev tryout worktree use ${here}   (serve it as the primary)"
+                return 1
+            fi
+        fi
+    fi
+
+    [ -n "${site}" ] || site="$(ask_site "Which site to open?")" \
+        || { explain_missing "ddev tryout launch [<worktree>] [--backend]"; return 1; }
+
+    # The active worktree IS the primary and has no sites/<name>/ marker of its
+    # own, so it would read as "not served" by name. The panel passes exactly
+    # that — its own worktree name, primary included — and so does anyone typing
+    # the name they see in `worktree list`.
+    if [ "${site}" = "$(active_worktree_name 2>/dev/null)" ]; then site="${PRIMARY_SITE}"; fi
+
+    if ! site_is_served "${site}"; then
+        error "No served site '${site}'"
+        error "  → ddev tryout worktree list"
+        return 1
+    fi
+
+    local url
+    if site_is_primary "${site}"; then
+        # DDEV knows the primary's URL, including a non-standard port or scheme.
+        url="${DDEV_PRIMARY_URL:-https://$(site_hostname "${site}")}"
+    else
+        url="https://$(site_hostname "${site}")"
+    fi
+    if [ "${backend}" = "true" ]; then url="${url%/}/typo3/"; fi
+
+    open_url "${url}"
+}
+
+cmd_launch_help() {
+    echo ""
+    echo -e "${BOLD}ddev tryout launch${NC} — open a site in the browser"
+    echo ""
+    echo -e "  ${BOLD}launch${NC}                  The worktree you are in, or pick from a list"
+    echo -e "  ${BOLD}launch <worktree>${NC}       That worktree's site"
+    echo ""
+    echo "  Flags: --backend   open /typo3/ instead of the frontend"
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# herdr — Open every Core worktree in its own herdr tab
+# ─────────────────────────────────────────────────────────────────────
+cmd_herdr() {
+    # Subcommands come before the flag loop: they are separate entry points.
+    case "${1:-}" in
+        new)           shift; cmd_herdr_new "$@"; return $? ;;
+    esac
+
+    local only="" use_agent="true" focus="true" attach="true"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --no-agent)  use_agent="false" ;;
+            --focus)     focus="true" ;;
+            --no-focus)  focus="false" ;;
+            --no-attach) attach="false" ;;
+            -h|--help)  cmd_herdr_help; return 0 ;;
+            -*)         error "Unknown option: $1"; cmd_herdr_help; return 1 ;;
+            *)          only="$1" ;;
+        esac
+        shift
+    done
+
+    herdr_available || return 1
+    require_core
+
+    local names
+    if ! core_is_symlinked; then
+        # A fresh project has one plain clone and no worktrees yet. Open it as a
+        # single workspace rather than turning the user away; it goes by its
+        # branch, the name the worktree layout gives it later.
+        names="$(plain_core_name)"
+        if [ -n "${only}" ] && [ "${only}" != "${names}" ]; then
+            error "No worktree '${only}' — this project has a single Core checkout, '${names}'"
+            error "  → ddev tryout herdr ${names}"
+            error "  → or: ddev tryout worktree add ${only} <branch>"
+            return 1
+        fi
+    elif [ -n "${only}" ]; then
+        validate_worktree_name "${only}" || return 1
+        names="${only}"
+    else
+        # Names only, and `core_worktree_names` is the helper that costs nothing:
+        # list_core_worktrees runs two `git diff` calls per worktree for a dirty
+        # column this discards with `cut -f1`. On a Mutagen project that is ~3.8s
+        # per Core checkout cold — 24s over eight worktrees, and the whole of the
+        # "reloading workspaces…" pause after a panel command.
+        names=$(core_worktree_names)
+    fi
+
+    if [ -z "${names}" ]; then
+        error "No Core worktrees found"
+        error "  → ddev tryout worktree add <name> <branch>"
+        return 1
+    fi
+
+    echo ""
+    ensure_herdr_session || return 1
+
+    # Reconcile before opening anything: a workspace already sitting in one of our
+    # worktrees under an older label is adopted here, so the loop below sees it as
+    # open and does not create a duplicate beside it. Bare runs only — naming a
+    # worktree must not touch workspaces it has nothing to do with.
+    [ -z "${only}" ] && sync_herdr_workspaces
+
+    local name first_ws="" first_label=""
+    # A failure on one worktree must not abandon the rest.
+    for name in ${names}; do
+        if open_worktree_in_herdr "${name}" "${use_agent}"; then
+            if [ -z "${first_ws}" ]; then
+                first_ws="$(herdr_workspace_id "${name}")"
+                first_label="$(herdr_workspace_label "${name}")"
+            fi
+        fi
+    done
+
+    # A rename is a remove plus an add to herdr, so the worktree that vanished is
+    # only orphaned once its replacement has been opened above.
+    [ -z "${only}" ] && close_orphan_workspaces
+
+    # Land the user on the first Core workspace rather than wherever they were.
+    if [ "${focus}" != "false" ] && [ -n "${first_ws}" ]; then
+        herdr_cli workspace focus "${first_ws}" >/dev/null 2>&1 || true
+    fi
+
+    echo ""
+    if [ -n "${first_ws}" ]; then
+        # A DDEV host command has no TTY, so it cannot attach the herdr UI itself —
+        # herdr panics without one, and refuses a nested launch from inside a pane.
+        # Attaching stays the user's keystroke, so hand them the exact command.
+        success "Session ready — focused ${first_label}"
+
+        if [ "${attach}" = "true" ]; then
+            attach_herdr_session
+        else
+            info "  ${DIM}→ herdr session attach $(herdr_session_name)${NC}"
+        fi
+    fi
+    echo ""
+}
+
+# herdr new — create a Core worktree and open it, prompting when run interactively.
+# This is what the herdr popup calls; `ddev tryout worktree add --herdr` is the same
+# work from the other direction.
+cmd_herdr_new() {
+    local name="${1:-}" branch="${2:-}"
+
+    herdr_available || return 1
+    require_core
+
+    # No name given: ask, if there is anyone to ask.
+    if [ -z "${name}" ]; then
+        name="$(ask_text "Name for the new worktree (becomes typo3-core-<name>)" "e.g. bugfix-12345")" \
+            || { explain_missing "ddev tryout herdr new <name> [<branch>]"; return 1; }
+    fi
+
+    validate_worktree_name "${name}" || return 1
+    # Asked for even when the name came in as an argument — the popup passes a name
+    # and no branch, and that must still be a question, not a silent ${BRANCH}.
+    ASKED_BRANCH="${branch}"
+    ask_new_worktree_branch "ddev tryout herdr new <name> [<branch>]" || return 1
+    branch="${ASKED_BRANCH}"
+
+    delegate worktree add "${name}" "${branch}" || return 1
+
+    echo ""
+    ensure_herdr_session || return 1
+    open_worktree_in_herdr "${name}" "true" "true" || return 1
+
+    echo ""
+    success "Worktree '${name}' opened as $(herdr_workspace_label "${name}")"
+    echo ""
+}
+
+cmd_herdr_help() {
+    echo ""
+    echo -e "${BOLD}ddev tryout herdr${NC} — open Core worktrees in herdr"
+    echo ""
+    echo "  Creates one herdr workspace per Core worktree (labelled core-<name>),"
+    echo "  each with a Claude tab and a Terminal tab rooted at that worktree,"
+    echo "  and a command panel docked beside the Terminal shell."
+    echo ""
+    echo -e "  ${BOLD}herdr${NC}                 Open every worktree"
+    echo -e "  ${BOLD}herdr <name>${NC}          Open just that one"
+    echo -e "  ${BOLD}herdr new [<name>]${NC}    Create a worktree and open it (prompts if bare)"
+    echo ""
+    echo "  Flags: --no-agent    A plain shell instead of claude"
+    echo "         --no-focus    Stay where you are (default: focus the first one)"
+    echo "         --no-attach   Print the attach command instead of attaching"
+    echo ""
+    echo "  Worktrees already open in any workspace are skipped, so the"
+    echo "  command is safe to re-run. A bare run also CLOSES workspaces whose"
+    echo "  worktree has been removed — including one whose agent is still"
+    echo "  working, so the session always matches the project. Name a worktree"
+    echo "  to open just that one and leave every other workspace alone."
+    echo ""
+    echo "  Runs in a herdr session of its own, 'tryout-<project>', started on"
+    echo "  demand, and attaches to it — your default session is never touched."
+    echo "  Stop the session with:"
+    echo "    herdr --session tryout-<project> server stop"
+    echo ""
+    echo "  Needs the herdr terminal multiplexer on the host — https://herdr.dev"
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# cs — Contribution setup (Gerrit hooks, template, push URL)
+# ─────────────────────────────────────────────────────────────────────
+cmd_cs() {
+    local sub="${1:-setup}"
+    shift || true
+
+    case "${sub}" in
+        setup)
+            require_core
+            # The username is the one thing setup may have to ask for; resolve it
+            # here, where a prompt can be answered.
+            local user="${1:-${TRYOUT_GERRIT_USER:-}}"
+            [ -n "${user}" ] || user=$(git -C "${CORE_DIR}" config --get tryout.gerritUser 2>/dev/null || true)
+            [ -n "${user}" ] || user="$(ask_text "Gerrit username (review.typo3.org)")" \
+                || { explain_missing "ddev tryout cs setup <username>"; return 1; }
+            delegate cs setup "${user}"
+            host_gerrit_ssh_report "${user}"
+            ;;
+        doctor)
+            require_core
+            delegate cs doctor
+            host_gerrit_ssh_report "$(git -C "${CORE_DIR}" config --get tryout.gerritUser 2>/dev/null || true)"
+            ;;
+        uninstall)
+            require_core
+            delegate cs uninstall
+            ;;
+        help|-h|--help) cmd_cs_help ;;
+        *)
+            error "Unknown cs command: ${sub}"
+            cmd_cs_help
+            return 1
+            ;;
+    esac
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# help — Show available commands
+# ─────────────────────────────────────────────────────────────────────
+cmd_help() {
+    reject_args help "$@" || return 1
+    echo ""
+    echo -e "${BOLD}ddev tryout${NC} — TYPO3 development toolkit"
+    echo ""
+    echo "Commands:"
+    echo -e "  ${BOLD}status${NC}                    Show project overview"
+    echo -e "  ${BOLD}download [--reset]${NC}        Clone or update Core (--reset: hard reset)"
+    echo -e "  ${BOLD}checkout <branch>${NC}         Switch TYPO3 version (main, 13.4, 12.4, ...)"
+    echo -e "  ${BOLD}composer${NC}                  Regenerate the overlay (not: run Composer)"
+    echo -e "  ${BOLD}patch [<id>] [<site>]${NC}     Apply a Gerrit patch — bare, browse and pick"
+    echo -e "  ${BOLD}worktree${NC}                  Manage side-by-side Core checkouts"
+    echo -e "  ${BOLD}cs [setup|doctor]${NC}         Prepare this instance for Core contribution"
+    echo -e "  ${BOLD}herdr [<name>|new]${NC}        Open Core worktrees as herdr workspaces"
+    echo -e "  ${BOLD}panel${NC}                     Dock a clickable command panel (inside herdr)"
+    echo -e "  ${DIM}                            herdr plugin link <project> adds prompting popups${NC}"
+    echo -e "  ${BOLD}exec <site> <cmd>${NC}         Run a command in a site's PHP/root/database"
+    echo -e "  ${BOLD}launch [<worktree>]${NC}       Open a site in the browser (--backend for /typo3/)"
+    echo -e "  ${BOLD}reset [<site>]${NC}            Reset Core to current branch + rebuild"
+    echo -e "  ${BOLD}delete [<site>]${NC}           Wipe DB + fileadmin, fresh setup (--all for every site)"
+    echo -e "  ${BOLD}help${NC}                      Show this help"
+    echo ""
+    echo -e "  ${DIM}worktree and herdr have their own help: ddev tryout worktree help${NC}"
+    echo ""
+    echo "Custom extensions:"
+    echo "  Place extensions in packages/ and run:"
+    echo "    ddev composer require vendor/my-extension:@dev"
+    echo ""
+    echo "Gerrit patches (auto-apply on start):"
+    echo "  Edit .ddev/config.tryout-patches.yaml:"
+    echo "    TRYOUT_PATCHES=56947,12345"
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# Dispatch
+# ─────────────────────────────────────────────────────────────────────
+case "${ACTION}" in
+    status)   cmd_status "$@" ;;
+    download) cmd_download "$@" ;;
+    checkout) cmd_checkout "$@" ;;
+    composer) cmd_composer "$@" ;;
+    patch)    cmd_patch "$@" ;;
+    worktree) cmd_worktree "$@" ;;
+    cs)       cmd_cs "$@" ;;
+    panel)    cmd_panel "$@" ;;
+    herdr)    cmd_herdr "$@" ;;
+    exec)     cmd_exec "$@" ;;
+    launch)   cmd_launch "$@" ;;
+    reset)    cmd_reset "$@" ;;
+    delete)   cmd_delete "$@" ;;
+    help)     cmd_help "$@" ;;
+    *)
+        error "Unknown command: ${ACTION}"
+        cmd_help
+        exit 1
+        ;;
+esac

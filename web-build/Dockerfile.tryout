@@ -1,0 +1,27 @@
+#ddev-generated
+# Provided by the tryout add-on. Builds a git >= 2.48 into the web image.
+#
+# tryout runs its git work inside this container while editors, herdr and the
+# completion read the same checkouts on the host. Both sides can only share
+# worktrees when their metadata holds RELATIVE paths (worktree.useRelativePaths),
+# which git learned in 2.48 — Debian trixie ships 2.47, and forky's 2.53 drags a
+# newer libc along. So it is built from source: ~1 minute once per image, then
+# cached until the DDEV image or this file changes. The tarball is pinned by
+# checksum. Build dependencies are purged again in the same layer.
+ARG TRYOUT_GIT_VERSION=2.53.0
+ARG TRYOUT_GIT_SHA256=5818bd7d80b061bbbdfec8a433d609dc8818a05991f731ffc4a561e2ca18c653
+RUN set -eu; export DEBIAN_FRONTEND=noninteractive; \
+    apt-get update -qq; \
+    apt-get install -y -qq --no-install-recommends \
+        build-essential libcurl4-openssl-dev libssl-dev zlib1g-dev libexpat1-dev; \
+    cd /tmp; \
+    curl -fsSL -o git.tar.xz "https://www.kernel.org/pub/software/scm/git/git-${TRYOUT_GIT_VERSION}.tar.xz"; \
+    echo "${TRYOUT_GIT_SHA256}  git.tar.xz" | sha256sum -c -; \
+    tar xf git.tar.xz; cd "git-${TRYOUT_GIT_VERSION}"; \
+    make -s -j"$(nproc)" prefix=/usr/local \
+        NO_TCLTK=1 NO_GETTEXT=1 NO_PERL=1 NO_PYTHON=1 INSTALL_SYMLINKS=1 install; \
+    cd /; rm -rf /tmp/git.tar.xz "/tmp/git-${TRYOUT_GIT_VERSION}"; \
+    apt-get purge -y -qq --auto-remove \
+        build-essential libcurl4-openssl-dev libssl-dev zlib1g-dev libexpat1-dev; \
+    rm -rf /var/lib/apt/lists/*; \
+    /usr/local/bin/git --version

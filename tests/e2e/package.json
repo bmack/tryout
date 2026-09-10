@@ -1,0 +1,12 @@
+{
+  "name": "tryout-e2e",
+  "private": true,
+  "description": "Opt-in browser tests: does each served worktree's TYPO3 backend really log in?",
+  "scripts": {
+    "test": "playwright test",
+    "install-browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1"
+  }
+}

@@ -1,2 +1,8 @@
 # Auto detect text files and ensure LF line endings
 * text=auto eol=lf
+
+# Exclude files from releases/tarballs
+tests/ export-ignore
+.github/ export-ignore
+.gitattributes export-ignore
+.editorconfig export-ignore

@@ -1,29 +1,41 @@
-# TYPO3 Core clone (managed by ddev tryout download)
-/typo3-core/
+# This repository is a DDEV add-on. The payload lives at the repo root
+# (install.yaml, commands/, tryout/, config.tryout*.yaml) and is copied into a
+# project's .ddev/ by `ddev add-on get`.
+#
+# The entries below are for using this checkout as a tryout project itself,
+# which is how the add-on is developed and tested. Nothing here is shipped;
+# the .gitignore installed into a consuming project is tryout/gitignore.
 
-# Composer artifacts
+# TYPO3 Core clone and its worktrees
+/typo3-core/
+/typo3-core
+/typo3-core-*/
+
+# Served worktree sites and their generated config
+/sites/
+/.ddev/
+
+# Composer artifacts (this checkout, when run as a project)
 /vendor/
 /public/
 /var/
-composer.lock
+/composer.json
+/composer.lock
+/composer.tryout.json
+/composer.tryout.lock
 
 # TYPO3 generated config
-/config/sites/
-/config/system/settings.php
-
-# DDEV local overrides (for worktrees / personal settings)
-/.ddev/config.local.yaml
-/.ddev/.webimageBuild/
-/.ddev/.homeadditions/
-/.ddev/db_snapshots/
-/.ddev/.ddev-docker-compose-full.yaml
+/config/
+/packages/
 
 # Composer auth (may contain tokens)
 /auth.json
 
-# Custom extensions are user-managed
-/packages/*
-!/packages/.gitkeep
+# Local tooling
+/.mcp.json
+/.agents/
+/.claude/
+/.typo3-dev-companion/
 
 # OS files
 .DS_Store

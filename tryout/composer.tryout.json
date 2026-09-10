@@ -1,0 +1,41 @@
+{
+    "_comment": "#ddev-generated — the tryout Composer overlay. Selected via COMPOSER=composer.tryout.json in .ddev/config.tryout.yaml. Your own composer.json is merged in and never rewritten; `ddev tryout composer` regenerates the require block below from the sysexts in typo3-core/.",
+    "description": "TYPO3 development environment — Core contribution & custom extensions",
+    "license": "GPL-2.0-or-later",
+    "type": "project",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "packages/*"
+        },
+        {
+            "type": "path",
+            "url": "typo3-core/typo3/sysext/*",
+            "options": {
+                "symlink": true
+            }
+        }
+    ],
+    "require": {
+        "wikimedia/composer-merge-plugin": "^2"
+    },
+    "extra": {
+        "merge-plugin": {
+            "include": [
+                "composer.json"
+            ],
+            "merge-extra": true,
+            "merge-extra-deep": true,
+            "merge-scripts": true
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "typo3/class-alias-loader": true,
+            "typo3/cms-composer-installers": true,
+            "wikimedia/composer-merge-plugin": true
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

@@ -1,0 +1,463 @@
+#!/usr/bin/env bash
+#ddev-generated
+
+# Tab-completion for `ddev tryout`.
+#
+# DDEV runs this on every TAB with the command line as argv and reads the
+# candidates from stdout, one per line:
+#
+#   ddev tryout cs <TAB>      ->  $1=tryout $2=cs $3=''
+#   ddev tryout cs doc<TAB>   ->  $1=tryout $2=cs $3=doc
+#
+# An empty word arrives as the two-character literal '' (DDEV execs us directly,
+# so no shell strips the quotes). We do not filter by the partial word — cobra
+# does that with whatever we return.
+#
+# DDEV hands every line to cobra verbatim (split on newline, nothing trimmed),
+# which unlocks cobra's two candidate conventions:
+#
+#   value<TAB>description   zsh and fish show the description beside the value;
+#                           bash does from 4.4 on and ignores it before that.
+#   _activeHelp_ message    shown as a hint line, never inserted — the answer
+#                           for positions that take free text.
+#
+# What DDEV does NOT let us do is suppress file completion: it always returns
+# cobra's Default directive, so where we offer nothing the shell lists files.
+# A hint above them is the best available UX; that is why every free-text
+# position emits one instead of staying silent.
+#
+# Deliberately NOT `set -euo pipefail`, unlike every other script here: DDEV
+# merges our stderr into the candidate list and drops every suggestion if we
+# exit non-zero. So diagnostics go to /dev/null and we always exit 0.
+#
+# And it must be instant: local files and local git only. Nothing here may run
+# `ddev exec`, touch the network, or call list_core_worktrees — that one runs a
+# `git status` per worktree and turned a TAB into a third of a second.
+
+# --- Locate the project ---------------------------------------------------
+# DDEV does NOT export DDEV_APPROOT to a completion script (it never calls
+# DockerEnv() on this path), and our cwd is wherever the user pressed TAB —
+# anywhere at or below the project root. So resolve it ourselves.
+resolve_approot() {
+    if [ -n "${DDEV_APPROOT:-}" ] && [ -d "${DDEV_APPROOT}/.ddev" ]; then
+        echo "${DDEV_APPROOT}"
+        return 0
+    fi
+
+    # We live at <approot>/.ddev/commands/host/autocomplete/tryout, so our own
+    # location names the project directly. Resolve $0 to an absolute path first:
+    # DDEV invokes us absolutely, but a relative $0 must not walk out of the tree.
+    local self
+    self="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+    if [ -n "${self}" ]; then
+        local from_self="${self%/.ddev/commands/host/autocomplete}"
+        if [ "${from_self}" != "${self}" ] && [ -d "${from_self}/.ddev" ]; then
+            echo "${from_self}"
+            return 0
+        fi
+    fi
+
+    # Otherwise walk up from the cwd, as DDEV's own CheckForConf does. Match any
+    # .ddev/config*.yaml — a project whose config lives only in a layered file
+    # (config.tryout.yaml) still has no plain config.yaml.
+    local dir="${PWD}"
+    while [ -n "${dir}" ] && [ "${dir}" != "/" ]; do
+        if [ -d "${dir}/.ddev" ] && compgen -G "${dir}/.ddev/config*.yaml" >/dev/null 2>&1; then
+            echo "${dir}"
+            return 0
+        fi
+        dir="$(dirname "${dir}")"
+    done
+}
+
+APPROOT="$(resolve_approot)"
+[ -z "${APPROOT}" ] && exit 0
+
+DDEV_APPROOT="${APPROOT}"
+export DDEV_APPROOT
+
+FUNCTIONS="${APPROOT}/.ddev/tryout/functions.sh"
+# Guard the source: a partial install must not break TAB.
+if [ -f "${FUNCTIONS}" ]; then
+    # shellcheck disable=SC1090
+    . "${FUNCTIONS}" 2>/dev/null
+fi
+
+# Every helper from functions.sh is optional here — see the guard above.
+fn() { declare -F "$1" >/dev/null 2>&1; }
+
+# --- The command line -----------------------------------------------------
+# $1 is "tryout". The LAST argument is always the word being typed; everything
+# before it is complete. With `ddev tryout herd<TAB>` argv is `tryout herd`, so
+# $2 is a partial word, not a verb — treating it as one printed nothing and zsh
+# fell back to file completion. So: drop the trailing word, then read positions
+# from what remains.
+#
+#   POS  which word is being completed, counted after "tryout":
+#        0 = the verb, 1 = its first argument (a subcommand for worktree/cs/herdr),
+#        2 = the next, ...
+#   VERB / SUB   the words at positions 0 and 1, once complete
+#   PREV         the complete word right before the cursor (for `--php <TAB>`)
+#   PARTIAL      what has been typed of the current word ("" for the '' literal)
+#   LINE         every complete word, for "was this flag already given?"
+POS=$(( $# - 2 ))
+[ "${POS}" -lt 0 ] && POS=0
+VERB=""; SUB=""; PREV=""
+[ "$#" -ge 3 ] && VERB="$2"
+[ "$#" -ge 4 ] && SUB="$3"
+[ "$#" -ge 2 ] && PREV="${*:$(( $# - 1 )):1}"
+PARTIAL="${!#}"
+[ "${PARTIAL}" = "''" ] && PARTIAL=""
+LINE=()
+[ "$#" -gt 2 ] && LINE=("${@:2:$(( $# - 2 ))}")
+
+# Typing `-` means "show me the flags": names would only be noise then.
+wants_flag() { case "${PARTIAL}" in -*) return 0 ;; esac; return 1; }
+
+on_line() {
+    local w
+    for w in "${LINE[@]}"; do [ "${w}" = "$1" ] && return 0; done
+    return 1
+}
+
+# --- Emitters -------------------------------------------------------------
+c()    { printf '%s\t%s\n' "$1" "$2"; }        # a described candidate
+hint() { printf '_activeHelp_ %s\n' "$*"; }    # guidance for a free-text word
+flag() { on_line "$1" || c "$1" "$2"; }        # a flag, offered only once
+
+# --- Candidate sources ----------------------------------------------------
+# Each prints described candidates and swallows every error.
+
+primary_name() { fn active_worktree_name && active_worktree_name 2>/dev/null; }
+
+# A site directory carries a .tryout-site marker once `worktree serve` has
+# finished. That file test is the whole cost of knowing a worktree's state.
+served_by_marker() { [ -f "${APPROOT}/sites/$1/.tryout-site" ]; }
+
+worktree_php() {
+    fn site_php_version && site_php_version "$1" 2>/dev/null
+}
+
+# worktrees [all|unserved|served|nonprimary]
+# Names come from the directory glob — the same one list_core_worktrees walks,
+# minus its per-worktree `git status`.
+worktrees() {
+    local mode="${1:-all}" prefix="${APPROOT}/typo3-core-" d name primary php
+    primary="$(primary_name)"
+    for d in "${prefix}"*; do
+        [ -d "${d}" ] || continue
+        name="${d#"${prefix}"}"
+        case "${mode}" in
+            unserved)   served_by_marker "${name}" && continue ;;
+            served)     served_by_marker "${name}" || continue ;;
+            nonprimary) [ "${name}" = "${primary}" ] && continue ;;
+        esac
+        if [ "${name}" = "${primary}" ]; then
+            c "${name}" "primary — at the project URL"
+        elif served_by_marker "${name}"; then
+            php="$(worktree_php "${name}")"
+            c "${name}" "served${php:+ · PHP ${php}}"
+        else
+            c "${name}" "not served"
+        fi
+    done
+}
+
+# A served site is defined by its marker under sites/, exactly as
+# served_site_names reads it — not by a worktree directory happening to exist.
+sites() {
+    local d name php
+    c "${PRIMARY_SITE:-@primary}" "the primary site at the project URL"
+    for d in "${APPROOT}"/sites/*/; do
+        name="$(basename "${d}")"
+        served_by_marker "${name}" || continue
+        php="$(worktree_php "${name}")"
+        c "${name}" "served worktree${php:+ · PHP ${php}}"
+    done
+}
+
+# Local refs only — a TAB must never wait on the network. `download` and
+# `checkout` both fetch, so this list is as fresh as the last one. Order is by
+# usefulness: `main`, release branches newest first, and the pre-9 `TYPO3_x-y`
+# refs last — sort -V alone would rank those above 14.3.
+branches() {
+    fn list_local_core_branches || return 0
+    local current b
+    current="$(git -C "${APPROOT}/typo3-core" branch --show-current 2>/dev/null)"
+    list_local_core_branches 2>/dev/null | sort -rV \
+        | awk '$0=="main"{next} /^[0-9]/{print; next} {legacy=legacy $0 "\n"} END{printf "%s", legacy}' \
+        | { echo main; cat; } \
+        | while IFS= read -r b; do
+            [ -n "${b}" ] || continue
+            local what="release branch"
+            case "${b}" in
+                main)    what="latest development" ;;
+                TYPO3_*) what="legacy branch" ;;
+            esac
+            [ "${b}" = "${current}" ] && what="${what} — checked out"
+            c "${b}" "${what}"
+        done
+}
+
+# The PHP versions DDEV ships for 8.x. available_php_versions() would be the
+# authoritative source but needs `ddev exec`, which a TAB may not afford. With a
+# host php the list is narrowed to what this worktree's composer.json accepts,
+# using the same reading of require.php as best_php_for_worktree.
+php_versions() {
+    local wt="${1:-}" all="8.1 8.2 8.3 8.4 8.5" ok v best=""
+    local composer="${APPROOT}/typo3-core-${wt}/composer.json"
+    ok="${all}"
+    if [ -n "${wt}" ] && [ -f "${composer}" ] && command -v php >/dev/null 2>&1; then
+        ok="$(php -r '
+            $d = json_decode(@file_get_contents($argv[1]), true);
+            $c = is_array($d) ? ($d["require"]["php"] ?? "") : "";
+            $out = [];
+            foreach (explode(" ", $argv[2]) as $v) {
+                $ok = true; $vv = $v . ".0";
+                foreach (preg_split("/[\s,]+/", trim($c), -1, PREG_SPLIT_NO_EMPTY) as $p) {
+                    if (preg_match("/^\^(\d+)\.(\d+)/", $p, $m)) {
+                        $ok = $ok && version_compare($vv, "{$m[1]}.{$m[2]}.0", ">=")
+                                  && version_compare($vv, ($m[1] + 1) . ".0.0", "<");
+                    } elseif (preg_match("/^(>=|<=|>|<|=)?\s*(\d+(?:\.\d+){0,2})$/", $p, $m)) {
+                        $op = $m[1] ?: ">=";
+                        $ok = $ok && version_compare($vv, $m[2], $op === "=" ? "==" : $op);
+                    }
+                }
+                if ($ok) $out[] = $v;
+            }
+            echo implode(" ", $out);
+        ' "${composer}" "${all}" 2>/dev/null)"
+        [ -n "${ok}" ] || ok="${all}"
+    fi
+    for v in ${ok}; do best="${v}"; done
+    for v in ${ok}; do
+        if [ "${v}" = "${best}" ] && [ -n "${wt}" ]; then
+            c "${v}" "default for ${wt}"
+        else
+            c "${v}" "PHP ${v}"
+        fi
+    done
+}
+
+# The change numbers already configured for auto-apply — the ones most likely
+# to be re-applied by hand.
+patch_numbers() {
+    local f="${APPROOT}/.ddev/config.tryout-patches.yaml" n
+    [ -f "${f}" ] || return 0
+    sed -n 's/^[[:space:]]*-[[:space:]]*TRYOUT_PATCHES=//p' "${f}" 2>/dev/null \
+        | tr ',' '\n' | tr -d ' ' | while IFS= read -r n; do
+            [ -n "${n}" ] && c "${n}" "from config.tryout-patches.yaml"
+        done
+}
+
+stray_worktrees() {
+    fn list_foreign_core_worktrees || return 0
+    local p
+    list_foreign_core_worktrees 2>/dev/null | while IFS= read -r p; do
+        [ -n "${p}" ] && c "${p}" "checkout outside the project"
+    done
+}
+
+# --- Dispatch -------------------------------------------------------------
+case "${VERB}" in
+    '' | "''")
+        # ddev tryout <TAB> — the verbs the dispatch case accepts.
+        c status   "Show project overview"
+        c download "Clone or update Core"
+        c checkout "Switch TYPO3 version (main, 13.4, 12.4, ...)"
+        c composer "Regenerate the Composer overlay"
+        c patch    "Apply one Gerrit patch, or all from config"
+        c worktree "Manage side-by-side Core checkouts"
+        c cs       "Prepare this instance for Core contribution"
+        c herdr    "Open Core worktrees as herdr workspaces"
+        c panel    "Dock a clickable command panel (inside herdr)"
+        c exec     "Run a command in a site's PHP/root/database"
+        c launch   "Open a site in the browser"
+        c reset    "Reset Core to current branch + rebuild"
+        c delete   "Wipe DB + fileadmin, fresh setup"
+        c help     "Show help"
+        ;;
+
+    status | composer | panel | help)
+        hint "${VERB} takes no arguments"
+        ;;
+
+    download)
+        flag --reset "hard-reset Core to the current branch"
+        [ "${POS}" -le 1 ] && ! wants_flag && sites
+        ;;
+
+    checkout)
+        flag --site "pin the site, so only the branch is asked for"
+        # checkout <branch> [<site>]
+        if [ "${POS}" -le 1 ]; then
+            branches
+        else
+            sites
+        fi
+        ;;
+
+    patch)
+        # patch [<change-id>] [<site>] [--all-branches]
+        if [ "${POS}" -le 1 ]; then
+            hint "Gerrit change number, e.g. 56947 — or nothing to browse the open changes"
+            patch_numbers
+            flag --all-branches "Browse changes on every branch, not just this one"
+        else
+            sites
+            flag --all-branches "Browse changes on every branch, not just this one"
+        fi
+        ;;
+
+    reset)
+        # reset [<site>]
+        [ "${POS}" -le 1 ] && sites
+        ;;
+
+    launch)
+        # launch [<worktree>] — bare, it uses the worktree you are standing in.
+        [ "${POS}" -le 1 ] && ! wants_flag && sites
+        flag --backend "open /typo3/ instead of the frontend"
+        ;;
+
+    exec)
+        # exec <site> <cmd>… — the site is ours; the command gets a nudge.
+        if [ "${POS}" -le 1 ]; then
+            sites
+        elif [ "${POS}" -eq 2 ]; then
+            hint "command to run in ${SUB}"
+            c typo3    "the TYPO3 console"
+            c composer "Composer in that site"
+            c php      "that site's PHP"
+            c bash     "a shell in that site"
+        fi
+        ;;
+
+    delete)
+        # delete [<site>|--all] [--yes]
+        if ! on_line --all && ! wants_flag; then
+            sites
+        fi
+        flag --all "every site, not just one"
+        flag --yes "skip the confirmation"
+        ;;
+
+    cs)
+        if [ "${POS}" -le 1 ]; then
+            c setup     "install hooks, template, push URL, author identity"
+            c doctor    "diagnose the contribution setup (probes Gerrit)"
+            c uninstall "remove hooks, reset push URL"
+            c help      "show help"
+        elif [ "${SUB}" = "setup" ] && [ "${POS}" -eq 2 ]; then
+            hint "your Gerrit username (default: TRYOUT_GERRIT_USER, then git config)"
+        fi
+        ;;
+
+    herdr)
+        # herdr [<worktree>|new] [flags]
+        if [ "${POS}" -le 1 ]; then
+            if ! wants_flag; then
+                c new          "create a worktree and open it"
+                worktrees all
+            fi
+            flag --no-agent  "a plain shell instead of claude"
+            flag --no-focus  "stay where you are"
+            flag --no-attach "print the attach command instead of attaching"
+        else
+            case "${SUB}" in
+                new)
+                    # herdr new [<name> [<branch>]]
+                    if [ "${POS}" -eq 2 ]; then
+                        hint "name for the new worktree (becomes typo3-core-<name>)"
+                    elif [ "${POS}" -eq 3 ]; then
+                        branches
+                    fi
+                    ;;
+                *)
+                    flag --no-agent  "a plain shell instead of claude"
+                    flag --no-focus  "stay where you are"
+                    flag --no-attach "print the attach command instead of attaching"
+                    ;;
+            esac
+        fi
+        ;;
+
+    worktree)
+        case "${SUB}" in
+            '' | "''")
+                if [ "${POS}" -le 1 ]; then
+                    c add     "create typo3-core-<name> from a branch"
+                    c list    "list worktrees and served sites"
+                    c use     "point the primary site at a worktree, then rebuild"
+                    c serve   "give a worktree its own URL, PHP version and database"
+                    c unserve "drop a site, keep the worktree"
+                    c remove  "remove a worktree (not the primary)"
+                    c adopt   "move stray checkouts into the project"
+                    c rename  "rename a checkout (the branch is untouched)"
+                    c help    "show help"
+                fi
+                ;;
+            add)
+                # add <name> [<branch>] [--detach] [--serve] [--php 8.2] [--herdr]
+                if [ "${POS}" -le 2 ]; then
+                    hint "name for the new worktree (becomes typo3-core-<name>)"
+                elif [ "${PREV}" = "--php" ]; then
+                    php_versions "${LINE[2]:-}"
+                else
+                    # A branch goes right after the name; later words are flags.
+                    [ "${POS}" -eq 3 ] && ! wants_flag && branches
+                    flag --detach "no branch, just a checkout"
+                    flag --serve  "serve it immediately"
+                    flag --php    "run it on another PHP version"
+                    flag --herdr  "open it as a herdr workspace"
+                    flag --no-restart "skip the DDEV restart --serve needs"
+                fi
+                ;;
+            list)
+                flag --plain "machine-readable columns, for scripts"
+                ;;
+            use)
+                [ "${POS}" -le 2 ] && ! wants_flag && worktrees nonprimary
+                flag --force "switch despite uncommitted changes"
+                ;;
+            remove | rm)
+                [ "${POS}" -le 2 ] && ! wants_flag && worktrees nonprimary
+                flag --force "also drop an unmerged branch"
+                flag --yes   "skip the confirmation"
+                ;;
+            serve)
+                if [ "${PREV}" = "--php" ]; then
+                    php_versions "${LINE[2]:-}"
+                else
+                    [ "${POS}" -le 2 ] && ! wants_flag && worktrees unserved
+                    flag --php "run this site on another PHP version"
+                    flag --no-restart "skip the DDEV restart a new hostname needs"
+                fi
+                ;;
+            unserve)
+                [ "${POS}" -le 2 ] && ! wants_flag && worktrees served
+                flag --drop-db "also drop the site's database"
+                flag --no-restart "skip the DDEV restart that releases the hostname"
+                ;;
+            adopt)
+                # adopt [<path> [<name>]] [--dry-run]
+                if [ "${POS}" -le 2 ]; then
+                    wants_flag || stray_worktrees
+                    flag --dry-run "show what would move, move nothing"
+                elif [ "${POS}" -eq 3 ] && ! on_line --dry-run; then
+                    hint "name for the adopted worktree (default: its directory name)"
+                fi
+                ;;
+            rename)
+                # rename <old> <new>
+                if [ "${POS}" -le 2 ]; then
+                    worktrees all
+                elif [ "${POS}" -eq 3 ]; then
+                    hint "new name for ${LINE[2]:-the worktree}"
+                fi
+                ;;
+        esac
+        ;;
+esac
+
+exit 0
