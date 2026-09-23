@@ -13,6 +13,7 @@ composer.lock
 
 # DDEV local overrides (for worktrees / personal settings)
 /.ddev/config.local.yaml
+/.ddev/.tryout-version
 /.ddev/.webimageBuild/
 /.ddev/.homeadditions/
 /.ddev/db_snapshots/

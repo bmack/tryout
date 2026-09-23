@@ -8,12 +8,57 @@
  * - Rewrites the "require" section with those packages at "@dev"
  * - Preserves non-typo3/cms-* requires (custom packages)
  * - Preserves all other composer.json fields
+ *
+ * With --release=14.3 the Core clone is not used: the path repository for
+ * typo3-core/ is removed and all typo3/cms-* / typo3/theme-* requirements
+ * become "^14.3" (Packagist). Running without it restores the dev-main setup.
  */
 
 $projectRoot = getenv('PROJECT_ROOT') ?: '/var/www/html';
 $composerFile = $projectRoot . '/composer.json';
 $composerLockFile = $projectRoot . '/composer.lock';
 $sysextDir = $projectRoot . '/typo3-core/typo3/sysext';
+
+$release = null;
+foreach ($argv as $arg) {
+    if (str_starts_with($arg, '--release=')) {
+        $release = substr($arg, strlen('--release='));
+    }
+}
+
+if ($release !== null) {
+    if (!preg_match('/^\d+(\.\d+){0,2}$/', $release)) {
+        fwrite(STDERR, "Error: invalid version '$release' (expected e.g. 14, 14.3 or 14.3.1)\n");
+        exit(1);
+    }
+    $composerData = json_decode(file_get_contents($composerFile), true);
+    if ($composerData === null) {
+        fwrite(STDERR, "Error: Failed to parse $composerFile\n");
+        exit(1);
+    }
+    $before = json_encode($composerData);
+    $major = (int)explode('.', $release)[0];
+    $composerData['repositories'] = array_values(array_filter(
+        $composerData['repositories'] ?? [],
+        static fn(array $repo): bool => !str_starts_with($repo['url'] ?? '', 'typo3-core/')
+    ));
+    foreach ($composerData['require'] ?? [] as $package => $version) {
+        if (!str_starts_with($package, 'typo3/cms-') && !str_starts_with($package, 'typo3/theme-')) {
+            continue;
+        }
+        if ($package === 'typo3/theme-camino' && $major < 14) {
+            unset($composerData['require'][$package]);
+            continue;
+        }
+        $composerData['require'][$package] = '^' . $release;
+    }
+    if (json_encode($composerData) !== $before) {
+        file_put_contents($composerFile, json_encode($composerData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+        @unlink($composerLockFile);
+    }
+    echo "composer.json requires TYPO3 ^$release from Packagist\n";
+    exit(0);
+}
 
 if (!is_dir($sysextDir)) {
     fwrite(STDERR, "Error: $sysextDir not found. Clone TYPO3 Core first.\n");
@@ -80,6 +125,19 @@ if ($branch === 'main' || version_compare($branch, '14', '>=')) {
 }
 
 ksort($newRequire);
+
+// Restore the Core path repository (removed by --release mode)
+$hasCoreRepo = false;
+foreach ($composerData['repositories'] ?? [] as $repo) {
+    $hasCoreRepo = $hasCoreRepo || ($repo['url'] ?? '') === 'typo3-core/typo3/sysext/*';
+}
+if (!$hasCoreRepo) {
+    $composerData['repositories'][] = [
+        'type' => 'path',
+        'url' => 'typo3-core/typo3/sysext/*',
+        'options' => ['symlink' => true],
+    ];
+}
 
 $composerData['require'] = $newRequire;
 

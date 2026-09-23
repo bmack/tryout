@@ -25,6 +25,22 @@ else
     BRANCH="main"
 fi
 
+# Resolve the requested TYPO3 release ("14.3" → typo3/cms-*:^14.3 from Packagist).
+# Order: TRYOUT_VERSION env (persisted for later starts) → .ddev/.tryout-version.
+# Empty or "main" means the default: Core clone in typo3-core/ at dev-main.
+VERSION_FILE="${PROJECT_ROOT}/.ddev/.tryout-version"
+TRYOUT_RELEASE=""
+if [ -n "${TRYOUT_VERSION:-}" ]; then
+    if [ "${TRYOUT_VERSION}" = "main" ] || [ "${TRYOUT_VERSION}" = "dev-main" ]; then
+        rm -f "${VERSION_FILE}"
+    else
+        echo "${TRYOUT_VERSION}" > "${VERSION_FILE}"
+        TRYOUT_RELEASE="${TRYOUT_VERSION}"
+    fi
+elif [ -f "${VERSION_FILE}" ]; then
+    TRYOUT_RELEASE="$(tr -d '[:space:]' < "${VERSION_FILE}")"
+fi
+
 # --- Colors ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'

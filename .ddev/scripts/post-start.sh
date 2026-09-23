@@ -13,8 +13,11 @@ echo -e "${BOLD}TYPO3 tryout — Post-Start Setup${NC}"
 echo "═══════════════════════════════════════"
 echo ""
 
-# --- Step 1: Clone TYPO3 Core if not present ---
-if [ ! -d "${CORE_DIR}/.git" ] && [ ! -f "${CORE_DIR}/.git" ]; then
+# --- Step 1: Clone TYPO3 Core if not present (skipped for a release version) ---
+if [ -n "${TRYOUT_RELEASE}" ]; then
+    info "[1/6] Using TYPO3 release ^${TRYOUT_RELEASE} from Packagist (no Core clone)"
+    ddev php /var/www/html/.ddev/scripts/sync-composer.php --release="${TRYOUT_RELEASE}" || exit 1
+elif [ ! -d "${CORE_DIR}/.git" ] && [ ! -f "${CORE_DIR}/.git" ]; then
     info "[1/6] Cloning TYPO3 Core repository..."
     info "This may take a few minutes on first run."
     if ! git clone --branch "${BRANCH}" "${CORE_REPO}" "${CORE_DIR}"; then
@@ -28,11 +31,19 @@ else
     info "[1/6] TYPO3 Core already present"
 fi
 
+# Switching from a release back to dev-main: restore path repository + @dev
+if [ -z "${TRYOUT_RELEASE}" ] && ! grep -q '"typo3-core/typo3/sysext/\*"' "${PROJECT_ROOT}/composer.json"; then
+    ddev php /var/www/html/.ddev/scripts/sync-composer.php || exit 1
+fi
+
 # --- Step 2: Apply patches from config ---
 patches="${TRYOUT_PATCHES:-}"
 patches=$(echo "${patches}" | tr -d '[:space:]')
 
-if [ -n "${patches}" ]; then
+if [ -n "${TRYOUT_RELEASE}" ]; then
+    [ -n "${patches}" ] && warn "[2/6] Gerrit patches need the Core clone — ignored for release ${TRYOUT_RELEASE}"
+    [ -z "${patches}" ] && info "[2/6] No patches (release mode)"
+elif [ -n "${patches}" ]; then
     info "[2/6] Resetting core to origin/${BRANCH} and applying patches: ${patches}"
     reset_core_to_main
     apply_all_patches || {

@@ -18,6 +18,20 @@ rm -rf .git && git init
 ddev start
 ```
 
+### Starting on a TYPO3 release
+
+By default you get `dev-main` from a Core clone. To use a released version
+from Packagist instead (`typo3/cms-*:^14.3`, no Core clone, no Gerrit patches):
+
+```bash
+ddev tryout start 14.3            # or: TRYOUT_VERSION=14.3 ddev start
+```
+
+(`ddev start 14.3` itself is not possible — DDEV reads that argument as a
+project name.) The version is remembered in `.ddev/.tryout-version`, so later
+`ddev start`/`ddev restart` keep it. Go back to dev-main with
+`ddev tryout start main`.
+
 The DDEV project name is derived from the folder, so `my-typo3-site` becomes
 `https://my-typo3-site.ddev.site/`.
 

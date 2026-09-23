@@ -4,7 +4,7 @@
 ## Description: TYPO3 development toolkit — manage Core, patches, and extensions
 ## Usage: tryout [command] [args]
 ## Example: "ddev tryout status\nddev tryout download\nddev tryout patch 56947\nddev tryout reset\nddev tryout delete"
-## AutocompleteTerms: ["status","download","checkout","composer","patch","reset","delete","help"]
+## AutocompleteTerms: ["start","status","download","checkout","composer","patch","reset","delete","help"]
 
 set -euo pipefail
 
@@ -13,6 +13,20 @@ source "${DDEV_APPROOT}/.ddev/scripts/functions.sh"
 
 ACTION="${1:-help}"
 shift || true
+
+# ─────────────────────────────────────────────────────────────────────
+# start — Start the project, optionally pinned to a TYPO3 release
+# ─────────────────────────────────────────────────────────────────────
+cmd_start() {
+    # "ddev start" itself takes no version argument, so this wraps it.
+    local version="${1:-}"
+    if [ -n "${version}" ]; then
+        info "Starting with TYPO3 ${version}..."
+        TRYOUT_VERSION="${version}" ddev start
+    else
+        ddev start
+    fi
+}
 
 # ─────────────────────────────────────────────────────────────────────
 # status — Show project overview
@@ -397,6 +411,7 @@ cmd_help() {
     echo -e "${BOLD}ddev tryout${NC} — TYPO3 development toolkit"
     echo ""
     echo "Commands:"
+    echo -e "  ${BOLD}start [version]${NC}     ddev start, optionally on a release (14.3 → ^14.3; main → dev-main)"
     echo -e "  ${BOLD}status${NC}              Show project overview"
     echo -e "  ${BOLD}download${NC}            Clone or update TYPO3 Core"
     echo -e "  ${BOLD}download --reset${NC}    Hard reset Core to current branch"
@@ -422,6 +437,7 @@ cmd_help() {
 # Dispatch
 # ─────────────────────────────────────────────────────────────────────
 case "${ACTION}" in
+    start)    cmd_start "$@" ;;
     status)   cmd_status "$@" ;;
     download) cmd_download "$@" ;;
     checkout) cmd_checkout "$@" ;;
