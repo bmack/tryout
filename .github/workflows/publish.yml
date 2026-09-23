@@ -1,0 +1,103 @@
+# Render the documentation and publish it to GitHub Pages.
+#
+# Two jobs, because they need different permissions: the first turns documents
+# into a site and uploads it, the second is the only thing allowed to deploy.
+#
+# Nothing in the repository itself is needed to build this — the renderer is
+# installed on the runner and thrown away with it, so `docs/` holds documents
+# and no PHP manifest at all.
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A second push to a branch replaces the first. Deployments queue instead —
+# a half-replaced site is worse than a site one commit behind.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      # The finishing step is one bundled file with no dependencies, but it is
+      # Node, and the version is named rather than inherited.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # The renderer, built where it is used. The theme brings phpDocumentor
+      # Guides, the highlighter and the frontend with it, so this one
+      # `require` is the whole dependency.
+      - name: The renderer
+        env:
+          RENDERER: ${{ runner.temp }}/renderer
+        run: |
+          mkdir -p "$RENDERER"
+          cd "$RENDERER"
+          composer init --no-interaction \
+            --name=typo3/tryout-documentation \
+            --author="Benni Mack <benni@typo3.org>"
+          composer require --no-interaction --no-progress typo3/soul-guides-theme:dev-main
+
+      # `--fail-on-error` catches a render that cannot finish. A reference that
+      # does not resolve is only a warning and still exits 0, so the output is
+      # read as well — otherwise a dead link publishes itself quietly.
+      - name: Render the documents
+        run: |
+          set -o pipefail
+          ${{ runner.temp }}/renderer/vendor/bin/guides docs \
+            --output=.site -c docs --fail-on-error 2>&1 | tee render.log
+          if grep -q 'app\.WARNING' render.log; then
+            grep -o 'app\.WARNING:.*' render.log | while read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          fi
+
+      # Everything between a render and a site: the drop-in copied to the site
+      # root, every element drawn so the pages read with no script, and the
+      # search index written.
+      - name: Finish the site
+        run: node ${{ runner.temp }}/renderer/vendor/typo3/soul-guides-theme/resources/dist/soul-finish.js .site
+
+      # Pages serves this artifact as it stands, but a repository switched to
+      # the branch-based build runs Jekyll, which drops every path starting
+      # with an underscore — including `_search.json` and `_images/`.
+      - run: touch .site/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .site
+
+  publish:
+    needs: render
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/configure-pages@v5
+      - id: deploy
+        uses: actions/deploy-pages@v4

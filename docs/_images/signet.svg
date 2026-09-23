@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="soul-ref" viewBox="0 0 24 24" role="img" aria-label="TYPO3 Tryout">
+  <title>TYPO3 Tryout</title>
+  <!-- Every colour sits on its own shape, as a var() with a hex fallback: a
+       page that declares the tokens gets its own ink, and this file still
+       renders on its own. Nothing colours it from a <style> or from the root,
+       and no comment in here may carry a double dash, which is what makes an
+       SVG malformed and a reference to it draw nothing. See
+       docs/design-system/artwork.rst. -->
+  <!-- M - drawn at 24, where one unit is one pixel. Stroke 2, rounding 1,
+       gap 2.
+
+       The sibling mark drops its faint middle line here; this one has nothing
+       to drop, so the triangle is redrawn a little smaller instead. The
+       stroke inflates it by one a side, and the inked size has to stay
+       put. -->
+  <path stroke="var(--text-primary, #8A8378)" d="M23 16V18A2 2 0 0 1 21 20H3A2 2 0 0 1 1 18V6A2 2 0 0 1 3 4H13" fill="none" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
+  <path d="M7 9L7 15L13 12Z" fill="var(--accent, #FF8700)" stroke="var(--accent, #FF8700)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
+  <path d="M17 4H21A2 2 0 0 1 23 6V11Z" fill="var(--accent, #FF8700)" stroke="var(--accent, #FF8700)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
+</svg>

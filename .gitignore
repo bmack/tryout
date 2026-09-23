@@ -18,6 +18,12 @@ composer.lock
 /.ddev/db_snapshots/
 /.ddev/.ddev-docker-compose-full.yaml
 
+# Documentation: the renderer and the rendered site (managed by ddev docs).
+# Both are dot-directories so it is obvious at a glance that they are
+# generated and never edited by hand.
+/.renderer/
+/.site/
+
 # Composer auth (may contain tokens)
 /auth.json
 
